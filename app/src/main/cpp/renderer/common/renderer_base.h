@@ -188,60 +188,80 @@ public:
     virtual ~RendererBase() = default;
 
     // Initialization
-    virtual bool initialize(const RendererConfig& config) = 0;
-    virtual void shutdown() = 0;
+    virtual bool initialize(const RendererConfig& config);
+    virtual void shutdown();
 
     // Rendering loop
-    virtual bool beginFrame() = 0;
-    virtual void endFrame() = 0;
-    virtual void present() = 0;
+    virtual bool beginFrame();
+    virtual void endFrame();
+    virtual void present();
 
     // Resource management
-    virtual BufferManager* getBufferManager() = 0;
-    virtual TextureManager* getTextureManager() = 0;
-    virtual ShaderManager* getShaderManager() = 0;
-    virtual FramebufferManager* getFramebufferManager() = 0;
-    virtual StateManager* getStateManager() = 0;
-    virtual CommandBuffer* getCommandBuffer() = 0;
-    virtual SyncManager* getSyncManager() = 0;
-    virtual ResourcePool* getResourcePool() = 0;
-    virtual Profiler* getProfiler() = 0;
+    virtual BufferManager* getBufferManager();
+    virtual TextureManager* getTextureManager();
+    virtual ShaderManager* getShaderManager();
+    virtual FramebufferManager* getFramebufferManager();
+    virtual StateManager* getStateManager();
+    virtual CommandBuffer* getCommandBuffer();
+    virtual SyncManager* getSyncManager();
+    virtual ResourcePool* getResourcePool();
+    virtual Profiler* getProfiler();
 
     // Configuration & info
-    virtual const RendererConfig& getConfig() const = 0;
-    virtual RendererBackend getBackend() const = 0;
-    virtual bool isInitialized() const = 0;
+    virtual const RendererConfig& getConfig() const;
+    virtual RendererBackend getBackend() const;
+    virtual bool isInitialized() const;
 
     // Frame statistics
-    virtual uint64_t getFrameNumber() const = 0;
-    virtual double getFrameTimeMs() const = 0;
-    virtual double getCpuTimeMs() const = 0;
-    virtual double getGpuTimeMs() const = 0;
-    virtual uint32_t getDrawCalls() const = 0;
-    virtual uint64_t getGpuMemoryUsed() const = 0;
-    virtual uint64_t getCpuMemoryUsed() const = 0;
+    virtual uint64_t getFrameNumber() const;
+    virtual double getFrameTimeMs() const;
+    virtual double getCpuTimeMs() const;
+    virtual double getGpuTimeMs() const;
+    virtual uint32_t getDrawCalls() const;
+    virtual uint64_t getGpuMemoryUsed() const;
+    virtual uint64_t getCpuMemoryUsed() const;
 
     // GPU info
-    virtual std::string getGpuRendererString() const = 0;
-    virtual std::string getGpuVendorString() const = 0;
-    virtual std::string getGpuVersionString() const = 0;
-    virtual GPUVendor getGpuVendor() const = 0;
-    virtual GPUArchitecture getGpuArchitecture() const = 0;
+    virtual std::string getGpuRendererString() const;
+    virtual std::string getGpuVendorString() const;
+    virtual std::string getGpuVersionString() const;
+    virtual GPUVendor getGpuVendor() const;
+    virtual GPUArchitecture getGpuArchitecture() const;
 
     // Surface handling
-    virtual void onSurfaceChanged(uint32_t width, uint32_t height) = 0;
-    virtual void onSurfaceDestroyed() = 0;
+    virtual void onSurfaceChanged(uint32_t width, uint32_t height);
+    virtual void onSurfaceDestroyed();
 
     // Memory pressure
-    virtual void onMemoryPressure(int level) = 0;
-    virtual void onThermalThrottling(float temperatureRatio) = 0;
+    virtual void onMemoryPressure(int level);
+    virtual void onThermalThrottling(float temperatureRatio);
 
     // Feature queries
-    virtual bool supportsFeature(RendererFeature feature) const = 0;
-    virtual bool isExtensionSupported(const std::string& extension) const = 0;
+    virtual bool supportsFeature(RendererFeature feature) const;
+    virtual bool isExtensionSupported(const std::string& extension) const;
 
     // Wait for idle
-    virtual void waitIdle() = 0;
+    virtual void waitIdle();
+
+    // Backend-specific methods (must be implemented by derived classes)
+    virtual bool detectGPU() = 0;
+    virtual void applyGPUWorkarounds(GPUVendor vendor, GPUArchitecture arch) = 0;
+    virtual void optimizeForGPU(GPUVendor vendor, GPUArchitecture arch) = 0;
+    virtual bool initializeManagers() = 0;
+    virtual bool onBeginFrame() = 0;
+    virtual void onEndFrame() = 0;
+    virtual void onPresent() = 0;
+    virtual void onResize(uint32_t width, uint32_t height) = 0;
+    virtual void onWaitIdle() = 0;
+    virtual RendererBackend getBackendImpl() const = 0;
+    virtual std::string getGpuRendererStringImpl() const = 0;
+    virtual std::string getGpuVendorStringImpl() const = 0;
+    virtual std::string getGpuVersionStringImpl() const = 0;
+    virtual void reduceQuality() = 0;
+
+protected:
+    struct Impl;
+    std::unique_ptr<Impl> pImpl;
 };
 
 using RendererFactory = std::function<std::unique_ptr<RendererBase>()>;
