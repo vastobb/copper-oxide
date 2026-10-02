@@ -513,6 +513,39 @@ std::string GLESCRenderer::getGpuVersionStringImpl() const {
     return gpu_info_.version_string;
 }
 
+void GLESCRenderer::onMemoryPressure(int level) {
+    // Delegated to the base: it trims the resource pool, texture cache and
+    // buffer pool. Resetting a manager here would hand out dangling pointers
+    // to callers that already cached getBufferManager().
+    RendererBase::onMemoryPressure(level);
+}
+
+void GLESCRenderer::onThermalThrottling(float temperatureRatio) {
+    RendererBase::onThermalThrottling(temperatureRatio);
+}
+
+bool GLESCRenderer::supportsFeature(RendererFeature feature) const {
+    return (static_cast<uint32_t>(feature) & static_cast<uint32_t>(supported_features_)) != 0;
+}
+
+bool GLESCRenderer::isExtensionSupported(const std::string& extension) const {
+    for (const auto& ext : gpu_info_.extensions) {
+        if (ext == extension) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void GLESCRenderer::waitIdle() {
+    if (!initialized_) {
+        return;
+    }
+    if (make_current()) {
+        glFinish();
+    }
+}
+
 void GLESCRenderer::reduceQuality() {
     // Quality scaling is driven by the resource managers; nothing to change
     // for a baseline backend that does not manage its own render scale yet.
