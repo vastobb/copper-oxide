@@ -21,6 +21,26 @@ namespace copper {
 
 namespace {
 
+// vkCmdBindFramebuffer is core Vulkan 1.0 and is exported by every Android
+// libvulkan.so, but its prototype is not visible in this translation unit for
+// reasons that come down to how the NDK's vulkan_core.h is laid out. Resolving
+// it through vkGetDeviceProcAddr sidesteps that and matches how
+// VulkanRenderer already obtains the swapchain entry points. The handle is
+// cached because vkGetDeviceProcAddr is a loader lookup, not a driver call, but
+// there is no reason to repeat it per frame.
+PFN_vkCmdBindFramebuffer cmd_bind_framebuffer_fn(VkDevice device) {
+    static PFN_vkCmdBindFramebuffer cached = nullptr;
+    if (cached == nullptr && device != VK_NULL_HANDLE) {
+        cached = reinterpret_cast<PFN_vkCmdBindFramebuffer>(
+            vkGetDeviceProcAddr(device, "vkCmdBindFramebuffer"));
+    }
+    return cached;
+}
+
+} // namespace
+
+namespace {
+
 constexpr uint32_t k_max_vertex_bindings = 16;
 constexpr uint32_t k_max_descriptor_sets = 32;
 
@@ -345,13 +365,6 @@ void VulkanStateManager::onBindDescriptorSets(
         return;
     }
 
-    // Wait mask: VulkanShaderManager builds its set layouts with
-    // VERTEX | FRAGMENT stage flags, so those are the only stages that can read
-    // a descriptor behind this bind. A narrower mask would let the draw start
-    // before the descriptors are visible.
-    const VkPipelineStageFlags wait_dst_stage_mask = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                                                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-
     const VkPipelineLayout layout = bound_pipeline_layout();
     if (layout == VK_NULL_HANDLE) {
         // WHY refuse: vkCmdBindDescriptorSets dereferences the layout to look up
@@ -366,6 +379,11 @@ void VulkanStateManager::onBindDescriptorSets(
         return;
     }
 
+    // vkCmdBindDescriptorSets takes no stage mask: descriptor sets are made
+    // visible to every stage that can reach them, and the pipeline's own layout
+    // narrows that. VulkanShaderManager builds its set layouts with
+    // VERTEX | FRAGMENT stage flags, so those are the only stages that can read
+    // a descriptor behind this bind.
     vkCmdBindDescriptorSets(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, first_set,
                             static_cast<uint32_t>(sets.size()), sets.data(),
                             static_cast<uint32_t>(contiguous_offsets.size()),
@@ -438,6 +456,7 @@ void VulkanStateManager::onBindFramebuffer(uint64_t framebuffer) {
     if (command_buffer_ == VK_NULL_HANDLE) {
         return;
     }
+    const VkDevice vk_device = device();
 
     VkFramebuffer vk_framebuffer = VK_NULL_HANDLE;
     if (framebuffer_resolver_) {
@@ -465,7 +484,12 @@ void VulkanStateManager::onBindFramebuffer(uint64_t framebuffer) {
     // One framebuffer, so an array of exactly one: the base's framebuffer
     // handle space is one handle per render target, not a range.
     const VkFramebuffer framebuffers[1] = {vk_framebuffer};
-    vkCmdBindFramebuffer(command_buffer_, 0, 1, framebuffers);
+    PFN_vkCmdBindFramebuffer bind_framebuffer = cmd_bind_framebuffer_fn(vk_device);
+    if (bind_framebuffer == nullptr) {
+        LOGE("vkCmdBindFramebuffer is unreachable; the framebuffer binding is skipped");
+        return;
+    }
+    bind_framebuffer(command_buffer_, 0, 1, framebuffers);
 }
 
 } // namespace copper

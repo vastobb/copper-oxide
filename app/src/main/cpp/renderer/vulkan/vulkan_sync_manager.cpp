@@ -31,7 +31,6 @@ const char* result_name(VkResult result) {
         case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
         case VK_ERROR_EXTENSION_NOT_PRESENT: return "VK_ERROR_EXTENSION_NOT_PRESENT";
         case VK_ERROR_FEATURE_NOT_PRESENT: return "VK_ERROR_FEATURE_NOT_PRESENT";
-        case VK_ERROR_INVALID_USE: return "VK_ERROR_INVALID_USE";
         default: return "VkResult";
     }
 }
@@ -45,23 +44,26 @@ VulkanSyncManager::~VulkanSyncManager() {
     // guaranteed cleanup point. Anything still in the tables was never handed
     // back through the base API; destroying it here is the whole reason the
     // tables are members instead of an Impl the base owns.
-    const VkDevice device = device();
-    if (device == VK_NULL_HANDLE) {
+    // Named vk_device, not device: a local called `device` would shadow the
+    // device() accessor and the call on the right-hand side would resolve to the
+    // variable being declared.
+    const VkDevice vk_device = device();
+    if (vk_device == VK_NULL_HANDLE) {
         return;
     }
     for (auto& [handle, fence] : fences_) {
         if (fence != VK_NULL_HANDLE) {
-            vkDestroyFence(device, fence, nullptr);
+            vkDestroyFence(vk_device, fence, nullptr);
         }
     }
     for (auto& [handle, semaphore] : semaphores_) {
         if (semaphore != VK_NULL_HANDLE) {
-            vkDestroySemaphore(device, semaphore, nullptr);
+            vkDestroySemaphore(vk_device, semaphore, nullptr);
         }
     }
     for (auto& [handle, event] : events_) {
         if (event != VK_NULL_HANDLE) {
-            vkDestroyEvent(device, event, nullptr);
+            vkDestroyEvent(vk_device, event, nullptr);
         }
     }
     fences_.clear();
@@ -79,14 +81,14 @@ VkDevice VulkanSyncManager::device() const {
 }
 
 void VulkanSyncManager::load_timeline_entry_points_locked() {
-    const VkDevice device = device();
-    if (device == VK_NULL_HANDLE || signal_semaphore_fn_ != nullptr) {
+    const VkDevice vk_device = device();
+    if (vk_device == VK_NULL_HANDLE || signal_semaphore_fn_ != nullptr) {
         return;
     }
     // Extension entry points must be resolved through the loader even when the
     // header declares a prototype; core-1.2 builds resolve it straight through.
     signal_semaphore_fn_ = reinterpret_cast<PFN_vkSignalSemaphoreKHR>(
-        vkGetDeviceProcAddr(device, "vkSignalSemaphoreKHR"));
+        vkGetDeviceProcAddr(vk_device, "vkSignalSemaphoreKHR"));
 }
 
 bool VulkanSyncManager::prepare() {
@@ -131,34 +133,22 @@ bool VulkanSyncManager::prepare_locked() {
     }
     timeline_available_ = has_extension;
 
-    // The feature bit is the part that actually matters: an extension that is
-    // not in VkDeviceCreateInfo::ppEnabledExtensionNames, or a features struct
-    // with timelineSemaphore == VK_FALSE, yields binary semaphores no matter
-    // what the property query says.
-    VkPhysicalDeviceFeatures features{};
-    vkGetPhysicalDeviceFeatures(physical_device, &features);
-    const bool feature_enabled = features.timelineSemaphore == VK_TRUE;
-    timeline_enabled_ = has_extension && feature_enabled;
-
-    if (timeline_enabled_) {
-        load_timeline_entry_points_locked();
-        if (signal_semaphore_fn_ == nullptr) {
-            // vkSignalSemaphoreKHR is core from 1.2; on a driver that hides it
-            // anyway, fall back rather than crash on a null call.
-            LOGW("vkSignalSemaphoreKHR is unreachable; timeline semaphores disabled");
-            timeline_enabled_ = false;
-        } else {
-            LOGI("sync manager: timeline semaphores enabled (VK_KHR_timeline_semaphore)");
-            return true;
-        }
-    }
+    // Being advertised is not the same as being usable. Timeline semaphores
+    // need the extension enabled in VkDeviceCreateInfo AND the feature bit set;
+    // the feature lives in VkPhysicalDeviceTimelineSemaphoreFeatures, which is a
+    // Vulkan 1.2 (extension) structure this 1.0-ABI build does not have. Since
+    // VulkanRenderer::create_logical_device() enables no extension and passes a
+    // zeroed VkPhysicalDeviceFeatures, timeline semaphores cannot be active on
+    // this path today. Reporting that honestly is better than probing a
+    // structure that is not there and guessing.
+    timeline_enabled_ = false;
 
     if (!has_extension) {
         LOGI("sync manager: %s absent; using binary semaphores",
              VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
-    } else if (!feature_enabled) {
-        LOGW("sync manager: %s present but VkPhysicalDeviceFeatures::timelineSemaphore is false;"
-             " enable it in VulkanRenderer::create_logical_device to get timeline semaphores",
+    } else {
+        LOGI("sync manager: %s present but not enabled on the device;"
+             " using binary semaphores",
              VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
     }
     return true;
@@ -208,8 +198,8 @@ uint64_t VulkanSyncManager::timeline_value(uint64_t handle) const {
 bool VulkanSyncManager::onCreateFence(uint64_t handle, bool signaled) {
     std::lock_guard<std::mutex> lock(mutex_);
     prepare_locked();
-    const VkDevice device = device();
-    if (device == VK_NULL_HANDLE) {
+    const VkDevice vk_device = device();
+    if (vk_device == VK_NULL_HANDLE) {
         LOGE("cannot create fence %llu: no VkDevice", static_cast<unsigned long long>(handle));
         return false;
     }
@@ -221,7 +211,7 @@ bool VulkanSyncManager::onCreateFence(uint64_t handle, bool signaled) {
     create_info.flags = signaled ? VK_FENCE_CREATE_SIGNALED_BIT : 0;
 
     VkFence fence = VK_NULL_HANDLE;
-    const VkResult result = vkCreateFence(device, &create_info, nullptr, &fence);
+    const VkResult result = vkCreateFence(vk_device, &create_info, nullptr, &fence);
     if (result != VK_SUCCESS) {
         LOGE("vkCreateFence failed for handle %llu: %s", static_cast<unsigned long long>(handle),
              result_name(result));
@@ -237,12 +227,12 @@ void VulkanSyncManager::onDestroyFence(uint64_t handle) {
     if (it == fences_.end()) {
         return;
     }
-    const VkDevice device = device();
+    const VkDevice vk_device = device();
     // A fence with a pending wait may not be destroyed. Nothing here can know
     // whether a submission is in flight, so the caller is responsible for the
     // wait (VulkanRenderer::onBeginFrame waits on the frame fence before reuse).
-    if (device != VK_NULL_HANDLE && it->second != VK_NULL_HANDLE) {
-        vkDestroyFence(device, it->second, nullptr);
+    if (vk_device != VK_NULL_HANDLE && it->second != VK_NULL_HANDLE) {
+        vkDestroyFence(vk_device, it->second, nullptr);
     }
     fences_.erase(it);
 }
@@ -268,8 +258,8 @@ bool VulkanSyncManager::onWaitFence(uint64_t handle, uint64_t timeout_ns) {
     if (fence == VK_NULL_HANDLE) {
         return false;
     }
-    const VkDevice device = device();
-    if (device == VK_NULL_HANDLE) {
+    const VkDevice vk_device = device();
+    if (vk_device == VK_NULL_HANDLE) {
         return false;
     }
     if (warn_infinite) {
@@ -278,7 +268,7 @@ bool VulkanSyncManager::onWaitFence(uint64_t handle, uint64_t timeout_ns) {
     }
     // timeout_ns is already nanoseconds, which is exactly vkWaitForFences's
     // unit, so 0 becomes the non-blocking poll the base API asks for.
-    const VkResult result = vkWaitForFences(device, 1, &fence, VK_TRUE, timeout_ns);
+    const VkResult result = vkWaitForFences(vk_device, 1, &fence, VK_TRUE, timeout_ns);
     if (result == VK_SUCCESS) {
         return true;
     }
@@ -315,14 +305,17 @@ void VulkanSyncManager::onResetFence(uint64_t handle) {
     if (it == fences_.end() || it->second == VK_NULL_HANDLE) {
         return;
     }
-    const VkDevice device = device();
-    if (device == VK_NULL_HANDLE) {
+    // Named vk_device, not device: a local called `device` would shadow the
+    // device() accessor and the call on the right-hand side would resolve to the
+    // variable being declared.
+    const VkDevice vk_device = device();
+    if (vk_device == VK_NULL_HANDLE) {
         return;
     }
     // Legal on an unsignalled fence (it just stays unsignalled). Illegal while
     // the fence is in use by a pending vkWaitForFences/vkQueueSubmit, which is
     // why the reset happens right before the submit that will re-signal it.
-    const VkResult result = vkResetFences(device, 1, &it->second);
+    const VkResult result = vkResetFences(vk_device, 1, &it->second);
     if (result != VK_SUCCESS) {
         LOGE("vkResetFences(handle=%llu) failed: %s", static_cast<unsigned long long>(handle),
              result_name(result));
@@ -336,8 +329,8 @@ void VulkanSyncManager::onResetFence(uint64_t handle) {
 bool VulkanSyncManager::onCreateSemaphore(uint64_t handle, uint64_t initial_value) {
     std::lock_guard<std::mutex> lock(mutex_);
     prepare_locked();
-    const VkDevice device = device();
-    if (device == VK_NULL_HANDLE) {
+    const VkDevice vk_device = device();
+    if (vk_device == VK_NULL_HANDLE) {
         LOGE("cannot create semaphore %llu: no VkDevice",
              static_cast<unsigned long long>(handle));
         return false;
@@ -364,7 +357,7 @@ bool VulkanSyncManager::onCreateSemaphore(uint64_t handle, uint64_t initial_valu
     }
 
     VkSemaphore semaphore = VK_NULL_HANDLE;
-    const VkResult result = vkCreateSemaphore(device, &create_info, nullptr, &semaphore);
+    const VkResult result = vkCreateSemaphore(vk_device, &create_info, nullptr, &semaphore);
     if (result != VK_SUCCESS) {
         LOGE("vkCreateSemaphore failed for handle %llu: %s",
              static_cast<unsigned long long>(handle), result_name(result));
@@ -383,11 +376,11 @@ void VulkanSyncManager::onDestroySemaphore(uint64_t handle) {
     if (it == semaphores_.end()) {
         return;
     }
-    const VkDevice device = device();
-    if (device != VK_NULL_HANDLE && it->second != VK_NULL_HANDLE) {
+    const VkDevice vk_device = device();
+    if (vk_device != VK_NULL_HANDLE && it->second != VK_NULL_HANDLE) {
         // A semaphore that is still in use by a submitted batch may not be
         // destroyed; the caller has to have waited on the fence first.
-        vkDestroySemaphore(device, it->second, nullptr);
+        vkDestroySemaphore(vk_device, it->second, nullptr);
     }
     semaphores_.erase(it);
     timeline_values_.erase(handle);
@@ -460,15 +453,15 @@ void VulkanSyncManager::onSignalSemaphore(uint64_t handle, uint64_t value) {
 bool VulkanSyncManager::onCreateEvent(uint64_t handle) {
     std::lock_guard<std::mutex> lock(mutex_);
     prepare_locked();
-    const VkDevice device = device();
-    if (device == VK_NULL_HANDLE) {
+    const VkDevice vk_device = device();
+    if (vk_device == VK_NULL_HANDLE) {
         LOGE("cannot create event %llu: no VkDevice", static_cast<unsigned long long>(handle));
         return false;
     }
     VkEventCreateInfo create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO;
     VkEvent event = VK_NULL_HANDLE;
-    const VkResult result = vkCreateEvent(device, &create_info, nullptr, &event);
+    const VkResult result = vkCreateEvent(vk_device, &create_info, nullptr, &event);
     if (result != VK_SUCCESS) {
         LOGE("vkCreateEvent failed for handle %llu: %s", static_cast<unsigned long long>(handle),
              result_name(result));
@@ -484,9 +477,9 @@ void VulkanSyncManager::onDestroyEvent(uint64_t handle) {
     if (it == events_.end()) {
         return;
     }
-    const VkDevice device = device();
-    if (device != VK_NULL_HANDLE && it->second != VK_NULL_HANDLE) {
-        vkDestroyEvent(device, it->second, nullptr);
+    const VkDevice vk_device = device();
+    if (vk_device != VK_NULL_HANDLE && it->second != VK_NULL_HANDLE) {
+        vkDestroyEvent(vk_device, it->second, nullptr);
     }
     events_.erase(it);
 }
@@ -497,8 +490,11 @@ void VulkanSyncManager::onSetEvent(uint64_t handle) {
     if (it == events_.end() || it->second == VK_NULL_HANDLE) {
         return;
     }
-    const VkDevice device = device();
-    if (device == VK_NULL_HANDLE) {
+    // Named vk_device, not device: a local called `device` would shadow the
+    // device() accessor and the call on the right-hand side would resolve to the
+    // variable being declared.
+    const VkDevice vk_device = device();
+    if (vk_device == VK_NULL_HANDLE) {
         return;
     }
     // WHY this is real Vulkan and still only host bookkeeping: a VkEvent only
@@ -506,7 +502,7 @@ void VulkanSyncManager::onSetEvent(uint64_t handle) {
     // vkSetEvent before that first batch leaves the device-side state untouched
     // and is a validation error. The base has already flipped its own flag, so
     // isEventSet() stays consistent with what callers expect.
-    const VkResult result = vkSetEvent(device, it->second);
+    const VkResult result = vkSetEvent(vk_device, it->second);
     if (result != VK_SUCCESS) {
         LOGE("vkSetEvent(handle=%llu) failed: %s", static_cast<unsigned long long>(handle),
              result_name(result));
@@ -519,14 +515,17 @@ void VulkanSyncManager::onResetEvent(uint64_t handle) {
     if (it == events_.end() || it->second == VK_NULL_HANDLE) {
         return;
     }
-    const VkDevice device = device();
-    if (device == VK_NULL_HANDLE) {
+    // Named vk_device, not device: a local called `device` would shadow the
+    // device() accessor and the call on the right-hand side would resolve to the
+    // variable being declared.
+    const VkDevice vk_device = device();
+    if (vk_device == VK_NULL_HANDLE) {
         return;
     }
     // Unlike vkSetEvent this is always legal: the reset host-side state is the
     // only state a host can change, and it is what the pending
     // vkWaitForFences-style host waits in the base read.
-    const VkResult result = vkResetEvent(device, it->second);
+    const VkResult result = vkResetEvent(vk_device, it->second);
     if (result != VK_SUCCESS) {
         LOGE("vkResetEvent(handle=%llu) failed: %s", static_cast<unsigned long long>(handle),
              result_name(result));
