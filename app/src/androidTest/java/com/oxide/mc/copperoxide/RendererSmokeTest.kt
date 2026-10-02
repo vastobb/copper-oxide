@@ -434,7 +434,11 @@ class RendererSmokeTest {
     }
 
     private companion object {
-        const val VERTEX_SHADER = """
+        // trimIndent matters here: GLSL requires the #version directive to be
+        // the first thing on the first line, and an indented raw string puts
+        // whitespace in front of it, which the compiler rejects outright.
+        val VERTEX_SHADER =
+            """
             #version 300 es
             layout(location = 0) in vec3 a_position;
             layout(location = 1) in vec4 a_color;
@@ -444,9 +448,10 @@ class RendererSmokeTest {
                 v_color = a_color;
                 gl_Position = u_mvp * vec4(a_position, 1.0);
             }
-        """
+            """.trimIndent()
 
-        const val FRAGMENT_SHADER = """
+        val FRAGMENT_SHADER =
+            """
             #version 300 es
             precision highp float;
             in vec4 v_color;
@@ -454,6 +459,6 @@ class RendererSmokeTest {
             void main() {
                 frag_color = v_color;
             }
-        """
+            """.trimIndent()
     }
 }

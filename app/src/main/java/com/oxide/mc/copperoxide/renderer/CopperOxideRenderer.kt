@@ -10,14 +10,8 @@ import androidx.annotation.Keep
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleObserver
 import androidx.lifecycle.OnLifecycleEvent
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.withContext
+import android.os.Handler
+import android.os.Looper
 
 /**
  * Copper Oxide Renderer - High-performance Minecraft Java Edition rendering translation layer
@@ -32,6 +26,11 @@ open class CopperOxideRenderer(
     companion object {
         private const val TAG = "CopperOxideRenderer"
         private const val STATS_INTERVAL_NANOS = 250_000_000L
+
+        // How long shutdown() waits for the render thread to notice the stop
+        // request. A frame in flight at up to 5s frame timeout can exceed this,
+        // which is why shutdown logs rather than blocking indefinitely.
+        private const val RENDER_THREAD_JOIN_TIMEOUT_MS = 6_000L
         private var sNativeLoaded = false
 
         @JvmStatic
@@ -60,8 +59,18 @@ open class CopperOxideRenderer(
     fun currentBackend(): RendererBackend = currentBackend
 
     // Rendering coroutine
-    private val renderScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var renderJob: Job? = null
+    // The render loop runs on its own dedicated thread, NOT on a coroutine
+    // dispatcher. A coroutine may resume on a different thread between
+    // iterations, and an EGL or Vulkan context is current on exactly one
+    // thread: eglMakeCurrent on a second thread fails with EGL_BAD_ACCESS, which
+    // is not recoverable and silently stops every frame. This was observed on a
+    // CI emulator, where the loop spun without ever rendering a frame.
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private var renderThread: Thread? = null
+
+    @Volatile
+    private var renderLoopRunning = false
     private var lastStatsEmitNanos = 0L
     private var targetFps = config.targetFps
     private var frameTimeNanos = 1_000_000_000L / config.targetFps.coerceAtLeast(1)
@@ -146,8 +155,16 @@ open class CopperOxideRenderer(
      * Start the render loop
      */
     private fun startRenderLoop() {
-        renderJob = renderScope.launch {
-            while (initialized && !Thread.currentThread().isInterrupted) {
+        val thread = Thread({ renderLoop() }, "CopperOxide-Render")
+        thread.priority = Thread.MAX_PRIORITY
+        renderLoopRunning = true
+        renderThread = thread
+        thread.start()
+    }
+
+    private fun renderLoop() {
+        try {
+            while (renderLoopRunning && initialized) {
                 val frameStart = System.nanoTime()
 
                 // beginFrame() returns false when the backend could not acquire
@@ -187,11 +204,14 @@ open class CopperOxideRenderer(
                 ) {
                     lastStatsEmitNanos = frameEnd
                     val stats = getFrameStats()
-                    withContext(Dispatchers.Main) {
-                        callback(stats)
-                    }
+                    // The callback is dispatched rather than invoked: it runs on
+                    // the main thread, which is where a UI observer expects it,
+                    // and the render thread must never block on the UI.
+                    mainHandler.post { callback(stats) }
                 }
             }
+        } finally {
+            renderLoopRunning = false
         }
     }
 
@@ -330,14 +350,18 @@ open class CopperOxideRenderer(
 
     @androidx.annotation.WorkerThread
     fun shutdown() {
-        // Join the render coroutine before tearing down the native renderer:
-        // cancelling without joining lets a frame call into a destroyed renderer.
-        val job = renderJob
-        renderJob = null
-        if (job != null) {
-            job.cancel()
-            runBlocking {
-                withTimeoutOrNull(2000L) { job.join() }
+        // Stop and join the render thread BEFORE tearing down the native
+        // renderer: a frame that is still in flight would otherwise call into a
+        // destroyed renderer, and the EGL context would be released while the
+        // thread that owns it is still running.
+        renderLoopRunning = false
+        val thread = renderThread
+        renderThread = null
+        if (thread != null) {
+            thread.interrupt()
+            thread.join(RENDER_THREAD_JOIN_TIMEOUT_MS)
+            if (thread.isAlive) {
+                Log.w(TAG, "render thread did not stop within ${RENDER_THREAD_JOIN_TIMEOUT_MS}ms")
             }
         }
         if (initialized) {
