@@ -555,9 +555,15 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeUploadTexture(
     }
     // A zero extent means "the whole level"; the texture manager resolves it
     // against the stored dimensions.
-    textures->updateTexture(static_cast<uint64_t>(handle), static_cast<uint32_t>(mipLevel), 0, 0, 0, 0, 0, 0, 0,
-                            bytes, static_cast<uint64_t>(length));
+    const bool uploaded =
+        textures->updateTexture(static_cast<uint64_t>(handle), static_cast<uint32_t>(mipLevel), 0, 0, 0, 0,
+                                0, 0, 0, bytes, static_cast<uint64_t>(length));
     env->ReleasePrimitiveArrayCritical(data, bytes, 0);
+    if (!uploaded) {
+        LOGE("texture %lld rejected a %d byte upload to mip %d", static_cast<long long>(handle), length,
+             mipLevel);
+        return JNI_FALSE;
+    }
     return JNI_TRUE;
 }
 

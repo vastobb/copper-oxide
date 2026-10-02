@@ -168,13 +168,39 @@ void TextureManager::destroyTexture(uint64_t handle) {
     pImpl->textures.erase(it);
 }
 
-void TextureManager::updateTexture(uint64_t handle, uint32_t mip_level, uint32_t array_layer, uint32_t x, uint32_t y, uint32_t z, uint32_t width, uint32_t height, uint32_t depth, const void* data, uint64_t data_size) {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    auto it = pImpl->textures.find(handle);
-    if (it == pImpl->textures.end()) {
-        return;
+bool TextureManager::updateTexture(uint64_t handle, uint32_t mip_level, uint32_t array_layer, uint32_t x, uint32_t y, uint32_t z, uint32_t width, uint32_t height, uint32_t depth, const void* data, uint64_t data_size) {
+    if (data == nullptr || data_size == 0) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        auto it = pImpl->textures.find(handle);
+        if (it == pImpl->textures.end()) {
+            return false;
+        }
+        const Texture& texture = it->second;
+        if (mip_level >= texture.mip_levels) {
+            return false;
+        }
+        if (array_layer >= texture.array_layers) {
+            return false;
+        }
+        // Resolve "whole level" against the stored extent before the region
+        // check, so a zero extent is not read as an out-of-bounds region.
+        const uint32_t full_width = width != 0 ? width : texture.width;
+        const uint32_t full_height = height != 0 ? height : texture.height;
+        const uint32_t full_depth = depth != 0 ? depth : texture.depth;
+        if (x > full_width || y > full_height || z > full_depth) {
+            return false;
+        }
+        if (static_cast<uint64_t>(x) + full_width > texture.width ||
+            static_cast<uint64_t>(y) + full_height > texture.height ||
+            static_cast<uint64_t>(z) + full_depth > texture.depth) {
+            return false;
+        }
     }
     onUpdateTexture(handle, mip_level, array_layer, x, y, z, width, height, depth, data, data_size);
+    return true;
 }
 
 void TextureManager::copyTexture(uint64_t src, uint64_t dst, uint32_t src_mip, uint32_t dst_mip, uint32_t src_layer, uint32_t dst_layer) {

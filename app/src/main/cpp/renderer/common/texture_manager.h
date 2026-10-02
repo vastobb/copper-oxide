@@ -42,7 +42,18 @@ public:
     virtual uint64_t createTextureCube(uint32_t width, uint32_t height, uint32_t format, uint32_t usage, uint32_t mip_levels = 1);
     virtual void destroyTexture(uint64_t handle);
 
-    virtual void updateTexture(uint64_t handle, uint32_t mip_level, uint32_t array_layer, uint32_t x, uint32_t y, uint32_t z, uint32_t width, uint32_t height, uint32_t depth, const void* data, uint64_t data_size);
+    /**
+     * Uploads one region of one mip level.
+     *
+     * Returns false when the handle is unknown, the level or layer is out of
+     * range, or the region leaves the level. Like updateBuffer, this used to
+     * return void, so a rejected upload was indistinguishable from a successful
+     * one at the JNI boundary.
+     *
+     * A zero width, height or depth means "the whole level", which the backend
+     * resolves against the stored extent.
+     */
+    virtual bool updateTexture(uint64_t handle, uint32_t mip_level, uint32_t array_layer, uint32_t x, uint32_t y, uint32_t z, uint32_t width, uint32_t height, uint32_t depth, const void* data, uint64_t data_size);
     virtual void copyTexture(uint64_t src, uint64_t dst, uint32_t src_mip, uint32_t dst_mip, uint32_t src_layer, uint32_t dst_layer);
     virtual void generateMipmaps(uint64_t handle);
 
