@@ -102,9 +102,15 @@ target_link_libraries(copper-oxide
     ${vulkan-lib}
 )
 
-# Set output directory
+# Visibility and PIC only.
+#
+# LIBRARY_OUTPUT_DIRECTORY is deliberately NOT set. The Android Gradle Plugin
+# drives an externalNativeBuild, and it points the library output at
+# build/intermediates/cxx/<abi>/<buildType>/<abi>/ and packages the .so from
+# there. Overriding the directory sends the library somewhere AGP does not look,
+# so the APK ships without it and System.loadLibrary fails with "not found" at
+# run time - which is exactly what the instrumented tests were hitting.
 set_target_properties(copper-oxide PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
     POSITION_INDEPENDENT_CODE ON
