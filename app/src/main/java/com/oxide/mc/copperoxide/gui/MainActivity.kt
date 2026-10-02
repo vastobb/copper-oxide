@@ -555,10 +555,10 @@ fun FeatureRow(feature: FeatureItem, supported: Boolean) {
             Icon(
                 if (supported) Icons.Default.CheckCircle else Icons.Default.Cancel,
                 tint = if (supported) ColorPalette.Success else ColorPalette.Error,
-                contentDescription = if (supported) "Supported" : "Not Supported"
+                contentDescription = if (supported) "Supported" else "Not Supported"
             )
             Text(
-                if (supported) "Supported" : "Unavailable",
+                if (supported) "Supported" else "Unavailable",
                 style = MaterialTheme.typography.labelMedium,
                 color = if (supported) ColorPalette.Success else ColorPalette.Error
             )
