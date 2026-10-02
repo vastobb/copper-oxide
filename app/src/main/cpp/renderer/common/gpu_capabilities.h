@@ -32,7 +32,7 @@ public:
     GPUCapabilities& operator=(GPUCapabilities&&) noexcept = default;
 
     bool detect();
-    void applyWorkarounds(RendererConfig& config) const;
+    void applyWorkarounds(const RendererConfig& config) const;
     GPUOptimizationConfig getOptimizationConfig() const;
 
     GPUVendor getVendor() const { return vendor_; }

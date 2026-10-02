@@ -24,12 +24,13 @@ bool GPUCapabilities::detect() {
     }
 
     // Apply GPU-specific workarounds and optimizations
-    applyWorkarounds(RendererConfig()); // Dummy config to trigger optimization config setup
+    RendererConfig dummy_config;
+    applyWorkarounds(dummy_config); // Dummy config to trigger optimization config setup
     
     return vendor_ != GPUVendor::Unknown;
 }
 
-void GPUCapabilities::applyWorkarounds(RendererConfig& config) const {
+void GPUCapabilities::applyWorkarounds(const RendererConfig& config) const {
     // This would apply specific workarounds based on detected GPU
     // For now, just set optimization config based on vendor/architecture
 }
@@ -308,16 +309,6 @@ void GPUCapabilities::queryGLESProperties() {
         std::string ext;
         while (iss >> ext) {
             supported_extensions_.push_back(ext);
-        }
-    }
-    
-    // Query GLES features
-    if (glGetStringi) {
-        GLint num_ext = 0;
-        glGetIntegerv(GL_NUM_EXTENSIONS, &num_ext);
-        for (GLint i = 0; i < num_ext; ++i) {
-            const char* ext = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, i));
-            if (ext) supported_extensions_.push_back(ext);
         }
     }
     

@@ -133,43 +133,6 @@ struct GPUInfo {
     std::vector<std::string> driver_bugs;
 };
 
-struct RendererConfig {
-    RendererBackend preferred_backend = RendererBackend::Auto;
-    bool enable_validation = false;
-    bool enable_debug_markers = true;
-    bool enable_profiling = true;
-    bool enable_multithreaded_rendering = true;
-    bool enable_async_shader_compilation = true;
-    bool enable_async_resource_loading = true;
-    bool enable_resource_pooling = true;
-    bool enable_command_buffer_reuse = true;
-    bool enable_state_caching = true;
-    bool enable_draw_call_batching = true;
-    bool enable_pipeline_caching = true;
-    bool enable_descriptor_caching = true;
-    bool enable_texture_streaming = true;
-    bool enable_texture_compression = true;
-    bool enable_mipmap_generation = true;
-    uint32_t max_frames_in_flight = 3;
-    uint32_t max_command_buffers_per_frame = 16;
-    uint32_t max_descriptor_sets = 8192;
-    uint32_t max_push_constants_size = 256;
-    uint32_t texture_cache_size_mb = 256;
-    uint32_t shader_cache_size_mb = 64;
-    uint32_t buffer_pool_size_mb = 128;
-    uint32_t frame_timeout_ms = 5000;
-    bool vsync_enabled = true;
-    uint32_t target_fps = 0; // 0 = unlimited
-    bool low_latency_mode = false;
-    bool battery_saver_mode = false;
-    bool thermal_throttling_aware = true;
-    float thermal_throttle_threshold = 0.85f;
-    RendererFeature required_features = RendererFeature::None;
-    RendererFeature optional_features = RendererFeature::All;
-    std::vector<std::string> disabled_extensions;
-    std::vector<std::string> forced_extensions;
-};
-
 struct FrameStats {
     uint64_t frame_number = 0;
     double frame_time_ms = 0.0;
