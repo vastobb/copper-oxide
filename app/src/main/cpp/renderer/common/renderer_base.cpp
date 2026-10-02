@@ -61,10 +61,6 @@ bool RendererBase::initialize(const RendererConfig& config) {
         return false;
     }
 
-    if (!initializeManagers()) {
-        return false;
-    }
-
     pImpl->initialized = true;
     return true;
 }
@@ -302,55 +298,6 @@ void RendererBase::applyGPUWorkarounds(GPUVendor vendor, GPUArchitecture arch) {
 
 void RendererBase::optimizeForGPU(GPUVendor vendor, GPUArchitecture arch) {
     onOptimizeForGPU(vendor, arch);
-}
-
-uint64_t RendererBase::getCurrentTimeNs() const {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::high_resolution_clock::now().time_since_epoch()).count();
-}
-
-bool RendererBase::initializeManagers() {
-    pImpl->profiler = std::make_unique<Profiler>();
-    if (!pImpl->profiler->initialize(this)) {
-        return false;
-    }
-
-    pImpl->bufferManager = std::make_unique<BufferManager>();
-    if (!pImpl->bufferManager->initialize(this)) {
-        return false;
-    }
-
-    pImpl->textureManager = std::make_unique<TextureManager>();
-    if (!pImpl->textureManager->initialize(this)) {
-        return false;
-    }
-
-    pImpl->shaderManager = std::make_unique<ShaderManager>();
-    if (!pImpl->shaderManager->initialize(this)) {
-        return false;
-    }
-
-    pImpl->framebufferManager = std::make_unique<FramebufferManager>();
-    if (!pImpl->framebufferManager->initialize(this)) {
-        return false;
-    }
-
-    pImpl->stateManager = std::make_unique<StateManager>();
-    if (!pImpl->stateManager->initialize(this)) {
-        return false;
-    }
-
-    pImpl->syncManager = std::make_unique<SyncManager>();
-    if (!pImpl->syncManager->initialize(this)) {
-        return false;
-    }
-
-    pImpl->resourcePool = std::make_unique<ResourcePool>();
-    if (!pImpl->resourcePool->initialize(this)) {
-        return false;
-    }
-
-    return true;
 }
 
 } // namespace copper
