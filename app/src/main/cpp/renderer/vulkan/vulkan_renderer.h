@@ -17,48 +17,51 @@ public:
     ~VulkanRenderer() override;
 
     // RendererBase interface
-    bool initialize(const RendererConfig& config, void* window_handle) override;
+    bool initialize(const RendererConfig& config) override;
     void shutdown() override;
 
-    bool begin_frame() override;
-    void end_frame() override;
+    bool beginFrame() override;
+    void endFrame() override;
     void present() override;
 
-    BufferManager* get_buffer_manager() override { return buffer_manager_.get(); }
-    TextureManager* get_texture_manager() override { return texture_manager_.get(); }
-    ShaderManager* get_shader_manager() override { return shader_manager_.get(); }
-    FramebufferManager* get_framebuffer_manager() override { return framebuffer_manager_.get(); }
-    StateManager* get_state_manager() override { return state_manager_.get(); }
-    CommandBuffer* get_command_buffer() override { return command_buffer_.get(); }
-    SyncManager* get_sync_manager() override { return sync_manager_.get(); }
-    ResourcePool* get_resource_pool() override { return resource_pool_.get(); }
-    Profiler* get_profiler() override { return profiler_.get(); }
+    BufferManager* getBufferManager() override { return buffer_manager_.get(); }
+    TextureManager* getTextureManager() override { return texture_manager_.get(); }
+    ShaderManager* getShaderManager() override { return shader_manager_.get(); }
+    FramebufferManager* getFramebufferManager() override { return framebuffer_manager_.get(); }
+    StateManager* getStateManager() override { return state_manager_.get(); }
+    CommandBuffer* getCommandBuffer() override { return command_buffer_.get(); }
+    SyncManager* getSyncManager() override { return sync_manager_.get(); }
+    ResourcePool* getResourcePool() override { return resource_pool_.get(); }
+    Profiler* getProfiler() override { return profiler_.get(); }
 
-    const RendererConfig& get_config() const override { return config_; }
-    const GPUInfo& get_gpu_info() const override { return gpu_info_; }
-    const RendererLimits& get_limits() const override { return limits_; }
-    RendererBackend get_backend() const override { return RendererBackend::Vulkan; }
-    bool is_initialized() const override { return initialized_; }
+    const RendererConfig& getConfig() const override { return config_; }
+    RendererBackend getBackend() const override { return RendererBackend::Vulkan; }
+    bool isInitialized() const override { return initialized_; }
 
-    const FrameStats& get_frame_stats() const override { return frame_stats_; }
-    void reset_frame_stats() override;
+    uint64_t getFrameNumber() const override { return frame_stats_.frame_number; }
+    double getFrameTimeMs() const override { return frame_stats_.frame_time_ms; }
+    double getCpuTimeMs() const override { return frame_stats_.cpu_time_ms; }
+    double getGpuTimeMs() const override { return frame_stats_.gpu_time_ms; }
+    uint32_t getDrawCalls() const override { return frame_stats_.draw_calls; }
+    uint64_t getGpuMemoryUsed() const override { return frame_stats_.gpu_memory; }
+    uint64_t getCpuMemoryUsed() const override { return frame_stats_.cpu_memory; }
 
-    void on_surface_created(void* surface) override;
-    void on_surface_changed(int width, int height) override;
-    void on_surface_destroyed() override;
+    std::string getGpuRendererString() const override { return gpu_info_.renderer; }
+    std::string getGpuVendorString() const override { return gpu_info_.vendor; }
+    std::string getGpuVersionString() const override { return gpu_info_.version; }
+    GPUVendor getGpuVendor() const override { return gpu_info_.vendor_enum; }
+    GPUArchitecture getGpuArchitecture() const override { return gpu_info_.architecture; }
 
-    void on_memory_pressure(int level) override;
-    void on_thermal_throttling(float temperature_ratio) override;
+    void onSurfaceChanged(uint32_t width, uint32_t height) override;
+    void onSurfaceDestroyed() override;
 
-    void set_debug_name(uint64_t object_handle, const std::string& name) override;
-    void insert_debug_marker(const std::string& marker) override;
-    void push_debug_group(const std::string& name) override;
-    void pop_debug_group() override;
+    void onMemoryPressure(int level) override;
+    void onThermalThrottling(float temperatureRatio) override;
 
-    bool supports_feature(RendererFeature feature) const override;
-    bool is_extension_supported(const std::string& extension) const override;
+    bool supportsFeature(RendererFeature feature) const override;
+    bool isExtensionSupported(const std::string& extension) const override;
 
-    void wait_idle() override;
+    void waitIdle() override;
 
 private:
     // Vulkan instance & device
