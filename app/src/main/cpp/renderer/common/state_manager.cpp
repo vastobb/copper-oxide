@@ -223,7 +223,10 @@ void StateManager::resetState() {
     pImpl->viewport_state = {};
     pImpl->scissor_state = {};
     pImpl->current_framebuffer = 0;
-    pImpl->pipeline_state.dirty = true;
+    pImpl->pipeline_state.pipeline_dirty = true;
+    pImpl->pipeline_state.vertex_buffers_dirty = true;
+    pImpl->pipeline_state.index_buffer_dirty = true;
+    pImpl->pipeline_state.topology_dirty = true;
     pImpl->descriptor_state.dirty = true;
     pImpl->viewport_state.dirty = true;
     pImpl->scissor_state.dirty = true;
