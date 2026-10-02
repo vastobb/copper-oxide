@@ -225,57 +225,60 @@ public:
     virtual ~RendererBase() = default;
 
     // Initialization
-    virtual bool initialize(const RendererConfig& config, void* window_handle) = 0;
+    virtual bool initialize(const RendererConfig& config) = 0;
     virtual void shutdown() = 0;
 
     // Rendering loop
-    virtual bool begin_frame() = 0;
-    virtual void end_frame() = 0;
+    virtual bool beginFrame() = 0;
+    virtual void endFrame() = 0;
     virtual void present() = 0;
 
     // Resource management
-    virtual BufferManager* get_buffer_manager() = 0;
-    virtual TextureManager* get_texture_manager() = 0;
-    virtual ShaderManager* get_shader_manager() = 0;
-    virtual FramebufferManager* get_framebuffer_manager() = 0;
-    virtual StateManager* get_state_manager() = 0;
-    virtual CommandBuffer* get_command_buffer() = 0;
-    virtual SyncManager* get_sync_manager() = 0;
-    virtual ResourcePool* get_resource_pool() = 0;
-    virtual Profiler* get_profiler() = 0;
+    virtual BufferManager* getBufferManager() = 0;
+    virtual TextureManager* getTextureManager() = 0;
+    virtual ShaderManager* getShaderManager() = 0;
+    virtual FramebufferManager* getFramebufferManager() = 0;
+    virtual StateManager* getStateManager() = 0;
+    virtual CommandBuffer* getCommandBuffer() = 0;
+    virtual SyncManager* getSyncManager() = 0;
+    virtual ResourcePool* getResourcePool() = 0;
+    virtual Profiler* getProfiler() = 0;
 
     // Configuration & info
-    virtual const RendererConfig& get_config() const = 0;
-    virtual const GPUInfo& get_gpu_info() const = 0;
-    virtual const RendererLimits& get_limits() const = 0;
-    virtual RendererBackend get_backend() const = 0;
-    virtual bool is_initialized() const = 0;
+    virtual const RendererConfig& getConfig() const = 0;
+    virtual RendererBackend getBackend() const = 0;
+    virtual bool isInitialized() const = 0;
 
     // Frame statistics
-    virtual const FrameStats& get_frame_stats() const = 0;
-    virtual void reset_frame_stats() = 0;
+    virtual uint64_t getFrameNumber() const = 0;
+    virtual double getFrameTimeMs() const = 0;
+    virtual double getCpuTimeMs() const = 0;
+    virtual double getGpuTimeMs() const = 0;
+    virtual uint32_t getDrawCalls() const = 0;
+    virtual uint64_t getGpuMemoryUsed() const = 0;
+    virtual uint64_t getCpuMemoryUsed() const = 0;
+
+    // GPU info
+    virtual std::string getGpuRendererString() const = 0;
+    virtual std::string getGpuVendorString() const = 0;
+    virtual std::string getGpuVersionString() const = 0;
+    virtual GPUVendor getGpuVendor() const = 0;
+    virtual GPUArchitecture getGpuArchitecture() const = 0;
 
     // Surface handling
-    virtual void on_surface_created(void* surface) = 0;
-    virtual void on_surface_changed(int width, int height) = 0;
-    virtual void on_surface_destroyed() = 0;
+    virtual void onSurfaceChanged(uint32_t width, uint32_t height) = 0;
+    virtual void onSurfaceDestroyed() = 0;
 
     // Memory pressure
-    virtual void on_memory_pressure(int level) = 0;
-    virtual void on_thermal_throttling(float temperature_ratio) = 0;
-
-    // Debug
-    virtual void set_debug_name(uint64_t object_handle, const std::string& name) = 0;
-    virtual void insert_debug_marker(const std::string& marker) = 0;
-    virtual void push_debug_group(const std::string& name) = 0;
-    virtual void pop_debug_group() = 0;
+    virtual void onMemoryPressure(int level) = 0;
+    virtual void onThermalThrottling(float temperatureRatio) = 0;
 
     // Feature queries
-    virtual bool supports_feature(RendererFeature feature) const = 0;
-    virtual bool is_extension_supported(const std::string& extension) const = 0;
+    virtual bool supportsFeature(RendererFeature feature) const = 0;
+    virtual bool isExtensionSupported(const std::string& extension) const = 0;
 
     // Wait for idle
-    virtual void wait_idle() = 0;
+    virtual void waitIdle() = 0;
 };
 
 using RendererFactory = std::function<std::unique_ptr<RendererBase>()>;

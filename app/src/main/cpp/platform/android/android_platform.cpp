@@ -1,91 +1,139 @@
 #include "android_platform.h"
+#include <jni.h>
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
+#include <android/log.h>
+#include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
-#include <android/configuration.h>
-#include <android/looper.h>
-#include <sys/system_properties.h>
+
+#define LOG_TAG "CopperOxide-Platform"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace copper {
 
-JNIEnv* AndroidPlatform::get_jni_env() {
-    JNIEnv* env = nullptr;
-    if (java_vm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
-        if (java_vm_->AttachCurrentThread(&env, nullptr) != JNI_OK) {
-            return nullptr;
+class AndroidPlatform::Impl {
+public:
+    JavaVM* jvm = nullptr;
+    jobject context = nullptr;
+    jclass context_class = nullptr;
+    jmethodID get_assets_method = nullptr;
+    jobject asset_manager = nullptr;
+    AAssetManager* native_asset_manager = nullptr;
+    jclass thermal_manager_class = nullptr;
+    jmethodID get_thermal_method = nullptr;
+    jobject thermal_manager = nullptr;
+    std::function<void(float)> thermal_callback;
+    std::function<void(int)> memory_callback;
+};
+
+AndroidPlatform::AndroidPlatform() : pImpl(std::make_unique<Impl>()) {}
+AndroidPlatform::~AndroidPlatform() = default;
+
+bool AndroidPlatform::initialize(JavaVM* jvm, JNIEnv* env, jobject context) {
+    pImpl->jvm = jvm;
+    pImpl->context = env->NewGlobalRef(context);
+    
+    // Get AssetManager
+    pImpl->context_class = env->GetObjectClass(context);
+    pImpl->get_assets_method = env->GetMethodID(pImpl->context_class, "getAssets", "()Landroid/content/res/AssetManager;");
+    if (pImpl->get_assets_method) {
+        pImpl->asset_manager = env->CallObjectMethod(context, pImpl->get_assets_method);
+        pImpl->asset_manager = env->NewGlobalRef(pImpl->asset_manager);
+        pImpl->native_asset_manager = AAssetManager_fromJava(env, pImpl->asset_manager);
+    }
+
+    // Get ThermalManager
+    jclass context_class = env->GetObjectClass(context);
+    jmethodID get_system_service = env->GetMethodID(context_class, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+    jstring thermal_service = env->NewStringUTF("thermalservice");
+    jobject thermal_service_obj = env->CallObjectMethod(context, get_system_service, thermal_service);
+    if (thermal_service_obj) {
+        pImpl->thermal_manager = env->NewGlobalRef(thermal_service_obj);
+    }
+    env->DeleteLocalRef(thermal_service);
+
+    LOGI("Android platform initialized");
+    return true;
+}
+
+void AndroidPlatform::shutdown() {
+    if (pImpl->asset_manager) {
+        pImpl->jvm->GetEnv(reinterpret_cast<void**>(&pImpl->jvm), JNI_VERSION_1_6);
+        JNIEnv* env;
+        pImpl->jvm->AttachCurrentThread(&env, nullptr);
+        env->DeleteGlobalRef(pImpl->asset_manager);
+        env->DeleteGlobalRef(pImpl->context);
+        if (pImpl->thermal_manager) {
+            env->DeleteGlobalRef(pImpl->thermal_manager);
         }
+        pImpl->jvm->DetachCurrentThread();
     }
-    return env;
+    LOGI("Android platform shutdown");
 }
 
-bool AndroidPlatform::attach_current_thread(JNIEnv** env) {
-    if (!java_vm_) return false;
-    jint result = java_vm_->AttachCurrentThread(env, nullptr);
-    return result == JNI_OK;
+float AndroidPlatform::getThermalThrottlingRatio() {
+    return 0.0f; // Would query thermal status
 }
 
-void AndroidPlatform::detach_current_thread() {
-    if (java_vm_) {
-        java_vm_->DetachCurrentThread();
+void AndroidPlatform::registerThermalCallback(std::function<void(float)> callback) {
+    pImpl->thermal_callback = std::move(callback);
+}
+
+void AndroidPlatform::registerMemoryPressureCallback(std::function<void(int)> callback) {
+    pImpl->memory_callback = std::move(callback);
+}
+
+bool AndroidPlatform::loadAsset(const std::string& path, std::vector<uint8_t>& out_data) {
+    if (!pImpl->native_asset_manager) return false;
+    
+    AAsset* asset = AAssetManager_open(pImpl->native_asset_manager, path.c_str(), AASSET_MODE_BUFFER);
+    if (!asset) return false;
+    
+    off_t size = AAsset_getLength(asset);
+    out_data.resize(size);
+    AAsset_read(asset, out_data.data(), size);
+    AAsset_close(asset);
+    return true;
+}
+
+bool AndroidPlatform::assetExists(const std::string& path) {
+    if (!pImpl->native_asset_manager) return false;
+    AAsset* asset = AAssetManager_open(pImpl->native_asset_manager, path.c_str(), AASSET_MODE_BUFFER);
+    if (asset) {
+        AAsset_close(asset);
+        return true;
+    }
+    return false;
+}
+
+void* AndroidPlatform::createNativeWindow(ANativeWindow* window) {
+    return window;
+}
+
+void AndroidPlatform::destroyNativeWindow(void* native_window) {
+    ANativeWindow* window = static_cast<ANativeWindow*>(native_window);
+    if (window) {
+        ANativeWindow_release(window);
     }
 }
 
-jclass AndroidPlatform::find_class(const char* name) {
-    JNIEnv* env = get_jni_env();
-    if (!env) return nullptr;
-    return env->FindClass(name);
+void AndroidPlatform::setPerformanceHint(int hint_type, int value) {
+    // Would call PowerManager.setPerformanceHint
 }
 
-jmethodID AndroidPlatform::get_method_id(jclass clazz, const char* name, const char* sig) {
-    JNIEnv* env = get_jni_env();
-    if (!env || !clazz) return nullptr;
-    return env->GetMethodID(clazz, name, sig);
+float AndroidPlatform::getBatteryLevel() {
+    return 1.0f; // Would query battery level
 }
 
-jfieldID AndroidPlatform::get_field_id(jclass clazz, const char* name, const char* sig) {
-    JNIEnv* env = get_jni_env();
-    if (!env || !clazz) return nullptr;
-    return env->GetFieldID(clazz, name, sig);
+bool AndroidPlatform::isCharging() {
+    return false; // Would query charging status
 }
 
-void AndroidPlatform::update_memory_info() {
-    JNIEnv* env = get_jni_env();
-    if (!env || !activity_) return;
-
-    jclass activity_class = env->GetObjectClass(activity_);
-    jmethodID get_system_service = env->GetMethodID(activity_class, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
-    jstring mem_service = env->NewStringUTF("activity");
-    jobject activity_manager = env->CallObjectMethod(activity_, get_system_service, mem_service);
-    env->DeleteLocalRef(mem_service);
-
-    if (activity_manager) {
-        jclass am_class = env->GetObjectClass(activity_manager);
-        jmethodID get_memory_info = env->GetMethodID(am_class, "getMemoryInfo", "(Landroid/app/ActivityManager$MemoryInfo;)V");
-        jclass mem_info_class = env->FindClass("android/app/ActivityManager$MemoryInfo");
-        jobject mem_info = env->AllocObject(mem_info_class);
-
-        env->CallVoidMethod(activity_manager, get_memory_info, mem_info);
-
-        jfieldID total_mem_field = env->GetFieldID(mem_info_class, "totalMem", "J");
-        jfieldID avail_mem_field = env->GetFieldID(mem_info_class, "availMem", "J");
-
-        total_memory_ = env->GetLongField(mem_info, total_mem_field);
-        available_memory_ = env->GetLongField(mem_info, avail_mem_field);
-
-        env->DeleteLocalRef(mem_info);
-        env->DeleteLocalRef(am_class);
-        env->DeleteLocalRef(activity_manager);
-    }
-    env->DeleteLocalRef(activity_class);
-}
-
-void AndroidPlatform::log(int priority, const char* tag, const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    log_v(priority, tag, fmt, args);
-    va_end(args);
-}
-
-void AndroidPlatform::log_v(int priority, const char* tag, const char* fmt, va_list args) {
-    __android_log_vprint(priority, tag, fmt, args);
+AndroidPlatform::DisplayInfo AndroidPlatform::getDisplayInfo() {
+    DisplayInfo info;
+    // Would query display metrics
+    return info;
 }
 
 } // namespace copper

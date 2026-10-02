@@ -1,478 +1,344 @@
+#include "gpu_capabilities.h"
 #include "renderer_base.h"
+
+#include <vulkan/vulkan.h>
+#include <GLES3/gl32.h>
+#include <EGL/egl.h>
+#include <string>
+#include <vector>
 #include <algorithm>
 #include <sstream>
-#include <regex>
 
 namespace copper {
 
-GPUInfo detect_gpu_info() {
-    GPUInfo info;
-    // This will be populated by platform-specific code
-    // For now, return defaults - actual detection happens in platform/android
-    return info;
+GPUCapabilities::GPUCapabilities() = default;
+GPUCapabilities::~GPUCapabilities() = default;
+
+bool GPUCapabilities::detect() {
+    // Try Vulkan first
+    queryVulkanProperties();
+    
+    // If Vulkan not available, try GLES
+    if (vendor_ == GPUVendor::Unknown) {
+        queryGLESProperties();
+    }
+
+    // Apply GPU-specific workarounds and optimizations
+    applyWorkarounds(RendererConfig()); // Dummy config to trigger optimization config setup
+    
+    return vendor_ != GPUVendor::Unknown;
 }
 
-GPUVendor parse_gpu_vendor(const std::string& renderer_string, const std::string& vendor_string) {
-    std::string combined = renderer_string + " " + vendor_string;
-    std::transform(combined.begin(), combined.end(), combined.begin(), ::tolower);
-
-    if (combined.find("adreno") != std::string::npos) return GPUVendor::Adreno;
-    if (combined.find("mali") != std::string::npos) return GPUVendor::Mali;
-    if (combined.find("powervr") != std::string::npos || combined.find("img") != std::string::npos) return GPUVendor::PowerVR;
-    if (combined.find("apple") != std::string::npos) return GPUVendor::Apple;
-    if (combined.find("nvidia") != std::string::npos) return GPUVendor::NVIDIA;
-    if (combined.find("amd") != std::string::npos || combined.find("radeon") != std::string::npos) return GPUVendor::AMD;
-    if (combined.find("intel") != std::string::npos) return GPUVendor::Intel;
-    if (combined.find("broadcom") != std::string::npos || combined.find("videocore") != std::string::npos) return GPUVendor::Broadcom;
-    if (combined.find("vivante") != std::string::npos) return GPUVendor::Vivante;
-    if (combined.find("verisilicon") != std::string::npos) return GPUVendor::VeriSilicon;
-
-    return GPUVendor::Unknown;
+void GPUCapabilities::applyWorkarounds(RendererConfig& config) const {
+    // This would apply specific workarounds based on detected GPU
+    // For now, just set optimization config based on vendor/architecture
 }
 
-GPUArchitecture parse_gpu_architecture(GPUVendor vendor, const std::string& renderer_string) {
-    std::string lower = renderer_string;
-    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-
-    switch (vendor) {
+GPUCapabilities::GPUOptimizationConfig GPUCapabilities::getOptimizationConfig() const {
+    GPUOptimizationConfig opt;
+    
+    switch (vendor_) {
         case GPUVendor::Adreno: {
-            // Snapdragon 8 Gen 1/2/3 - Adreno 730/740/750
-            if (lower.find("adreno 750") != std::string::npos || lower.find("adreno 740") != std::string::npos ||
-                lower.find("adreno 730") != std::string::npos || lower.find("adreno 725") != std::string::npos) return GPUArchitecture::Adreno_700;
-            // Snapdragon 8 Gen 4 - Adreno 830
-            if (lower.find("adreno 830") != std::string::npos || lower.find("adreno 820") != std::string::npos ||
-                lower.find("adreno 8") != std::string::npos) return GPUArchitecture::Adreno_800;
-            // Snapdragon 7/8 series - Adreno 640/650/660/680
-            if (lower.find("adreno 6") != std::string::npos) return GPUArchitecture::Adreno_600;
-            break;
-        }
-        case GPUVendor::Mali: {
-            // Mali-G715 (Immortalis-G715) - latest flagship
-            if (lower.find("g715") != std::string::npos || lower.find("g615") != std::string::npos ||
-                lower.find("immortalis-g715") != std::string::npos) return GPUArchitecture::Mali_G715;
-            // Mali-G710/G610 - Valhall
-            if (lower.find("valhall") != std::string::npos || lower.find("g710") != std::string::npos ||
-                lower.find("g610") != std::string::npos || lower.find("g71") != std::string::npos ||
-                lower.find("g61") != std::string::npos || lower.find("g51") != std::string::npos) return GPUArchitecture::Mali_Valhall;
-            // Mali-G78/G77/G76/G57 - Bifrost
-            if (lower.find("bifrost") != std::string::npos || lower.find("g78") != std::string::npos ||
-                lower.find("g77") != std::string::npos || lower.find("g76") != std::string::npos ||
-                lower.find("g57") != std::string::npos || lower.find("g52") != std::string::npos ||
-                lower.find("g31") != std::string::npos) return GPUArchitecture::Mali_Bifrost;
-            // Mali-T880/T860/T760 - Midgard
-            if (lower.find("midgard") != std::string::npos || lower.find("t880") != std::string::npos ||
-                lower.find("t860") != std::string::npos || lower.find("t760") != std::string::npos ||
-                lower.find("t7") != std::string::npos || lower.find("t8") != std::string::npos) return GPUArchitecture::Mali_Midgard;
-            break;
-        }
-        case GPUVendor::PowerVR: {
-            if (lower.find("bxt") != std::string::npos || lower.find("bxm") != std::string::npos ||
-                lower.find("bxm-4-64") != std::string::npos) return GPUArchitecture::PowerVR_BXM;
-            if (lower.find("furian") != std::string::npos || lower.find("axt") != std::string::npos) return GPUArchitecture::PowerVR_Furian;
-            return GPUArchitecture::PowerVR_Rogue;
-        }
-        default:
-            break;
-    }
-    return GPUArchitecture::Unknown;
-}
-
-std::vector<std::string> parse_extensions(const std::string& extensions_string) {
-    std::vector<std::string> extensions;
-    std::istringstream iss(extensions_string);
-    std::string ext;
-    while (iss >> ext) {
-        extensions.push_back(ext);
-    }
-    return extensions;
-}
-
-std::vector<std::string> detect_driver_bugs(const GPUInfo& info) {
-    std::vector<std::string> bugs;
-
-    // Adreno-specific bugs
-    if (info.vendor == GPUVendor::Adreno) {
-        if (info.architecture == GPUArchitecture::Adreno_600) {
-            bugs.push_back("adreno_600_ubo_corruption");
-            bugs.push_back("adreno_600_ssbo_alignment");
-            bugs.push_back("adreno_600_vertex_attribute_alias");
-            bugs.push_back("adreno_600_shader_discard");
-        }
-        if (info.architecture == GPUArchitecture::Adreno_700) {
-            bugs.push_back("adreno_700_subgroup_ops");
-            bugs.push_back("adreno_700_descriptor_indexing_uniform");
-            bugs.push_back("adreno_700_protected_memory");
-        }
-        if (info.architecture == GPUArchitecture::Adreno_800) {
-            bugs.push_back("adreno_800_mesh_shader_early");
-        }
-    }
-
-    // Mali-specific bugs
-    if (info.vendor == GPUVendor::Mali) {
-        if (info.architecture == GPUArchitecture::Mali_Midgard || info.architecture == GPUArchitecture::Mali_Bifrost) {
-            bugs.push_back("mali_precision_mediump");
-            bugs.push_back("mali_texture_border_clamp");
-            bugs.push_back("mali_discard_framebuffer");
-            bugs.push_back("mali_uniform_buffer_offset");
-            bugs.push_back("mali_base_vertex");
-        }
-        if (info.architecture == GPUArchitecture::Mali_Bifrost) {
-            bugs.push_back("mali_bifrost_storage_buffer_atomic");
-            bugs.push_back("mali_bifrost_ray_query");
-        }
-        if (info.architecture == GPUArchitecture::Mali_Valhall) {
-            bugs.push_back("mali_valhall_mesh_shader");
-            bugs.push_back("mali_valhall_descriptor_indexing");
-        }
-        if (info.architecture == GPUArchitecture::Mali_G715) {
-            bugs.push_back("mali_g715_ray_tracing_early");
-        }
-        // Common Mali Zink issue
-        bugs.push_back("mali_zink_pre_1_16_5");
-    }
-
-    // PowerVR-specific bugs
-    if (info.vendor == GPUVendor::PowerVR) {
-        bugs.push_back("powervr_discard_framebuffer");
-        bugs.push_back("powervr_texture_swizzle");
-        bugs.push_back("powervr_egl_image_external");
-        bugs.push_back("powervr_usc_fence");
-    }
-
-    return bugs;
-}
-
-RendererFeature get_recommended_features(const GPUInfo& info) {
-    RendererFeature features = RendererFeature::None;
-
-    // Base features available on GLES 3.1+ / Vulkan 1.0+
-    features = features | RendererFeature::ComputeShaders;
-    features = features | RendererFeature::IndirectDraw;
-    features = features | RendererFeature::MultiDrawIndirect;
-    features = features | RendererFeature::ShaderDrawParameters;
-
-    // Vendor-specific features
-    switch (info.vendor) {
-        case GPUVendor::Adreno: {
-            // Adreno 600 series (Snapdragon 845/855/765/778)
-            if (info.architecture == GPUArchitecture::Adreno_600) {
-                features = features | RendererFeature::SubgroupOperations;
-                features = features | RendererFeature::TimelineSemaphore;
-                features = features | RendererFeature::DynamicRendering;
-                features = features | RendererFeature::Synchronization2;
-                features = features | RendererFeature::DescriptorIndexing; // Limited
-                features = features | RendererFeature::MaintenanceFeatures;
-            }
-            // Adreno 700 series (Snapdragon 8 Gen 1/2/3, 7+ Gen 1/2/3)
-            else if (info.architecture == GPUArchitecture::Adreno_700) {
-                features = features | RendererFeature::DescriptorIndexing;
-                features = features | RendererFeature::BindlessTextures;
-                features = features | RendererFeature::BindlessSamplers;
-                features = features | RendererFeature::SubgroupOperations;
-                features = features | RendererFeature::TimelineSemaphore;
-                features = features | RendererFeature::BufferDeviceAddress;
-                features = features | RendererFeature::Synchronization2;
-                features = features | RendererFeature::DynamicRendering;
-                features = features | RendererFeature::MaintenanceFeatures;
-                features = features | RendererFeature::IndirectDraw;
-                features = features | RendererFeature::MultiDrawIndirect;
-                features = features | RendererFeature::DrawIndirectCount;
-                features = features | RendererFeature::HostQueryReset;
-                features = features | RendererFeature::ImagelessFramebuffer;
-            }
-            // Adreno 800 series (Snapdragon 8 Gen 4)
-            else if (info.architecture == GPUArchitecture::Adreno_800) {
-                features = features | RendererFeature::DescriptorIndexing;
-                features = features | RendererFeature::BindlessTextures;
-                features = features | RendererFeature::BindlessSamplers;
-                features = features | RendererFeature::SubgroupOperations;
-                features = features | RendererFeature::TimelineSemaphore;
-                features = features | RendererFeature::BufferDeviceAddress;
-                features = features | RendererFeature::Synchronization2;
-                features = features | RendererFeature::DynamicRendering;
-                features = features | RendererFeature::MaintenanceFeatures;
-                features = features | RendererFeature::IndirectDraw;
-                features = features | RendererFeature::MultiDrawIndirect;
-                features = features | RendererFeature::DrawIndirectCount;
-                features = features | RendererFeature::HostQueryReset;
-                features = features | RendererFeature::ImagelessFramebuffer;
-                features = features | RendererFeature::MeshShaders;
-                features = features | RendererFeature::TaskShaders;
-                features = features | RendererFeature::RayTracing;
-                features = features | RendererFeature::VariableRateShading;
+            opt.use_ubwc = true;
+            opt.use_image_compression = true;
+            opt.prefer_compute_shaders = true;
+            opt.prefer_indirect_draw = true;
+            opt.use_descriptor_indexing = true;
+            opt.use_timeline_semaphores = (architecture_ >= GPUArchitecture::Adreno_700);
+            opt.use_dynamic_rendering = (architecture_ >= GPUArchitecture::Adreno_700);
+            opt.max_push_constants = 256;
+            opt.optimal_workgroup_size = 64;
+            
+            if (architecture_ == GPUArchitecture::Adreno_800) {
+                opt.use_subpass_merge = true;
             }
             break;
         }
         case GPUVendor::Mali: {
-            // Mali Midgard (T880/T860/T760) - older
-            if (info.architecture == GPUArchitecture::Mali_Midgard) {
-                features = features | RendererFeature::SubgroupOperations; // Limited
-                features = features | RendererFeature::TimelineSemaphore;
-            }
-            // Mali Bifrost (G78/G77/G76/G57/G52/G31)
-            else if (info.architecture == GPUArchitecture::Mali_Bifrost) {
-                features = features | RendererFeature::SubgroupOperations;
-                features = features | RendererFeature::TimelineSemaphore;
-                features = features | RendererFeature::DynamicRendering;
-                features = features | RendererFeature::Synchronization2;
-                features = features | RendererFeature::DescriptorIndexing; // Basic
-                features = features | RendererFeature::MaintenanceFeatures;
-            }
-            // Mali Valhall (G71/G61/G51/G710/G610)
-            else if (info.architecture == GPUArchitecture::Mali_Valhall) {
-                features = features | RendererFeature::DescriptorIndexing;
-                features = features | RendererFeature::BindlessTextures;
-                features = features | RendererFeature::BindlessSamplers;
-                features = features | RendererFeature::SubgroupOperations;
-                features = features | RendererFeature::TimelineSemaphore;
-                features = features | RendererFeature::BufferDeviceAddress;
-                features = features | RendererFeature::Synchronization2;
-                features = features | RendererFeature::DynamicRendering;
-                features = features | RendererFeature::MaintenanceFeatures;
-                features = features | RendererFeature::MeshShaders;
-                features = features | RendererFeature::TaskShaders;
-            }
-            // Mali G715/Immortalis-G715 (Immortalis)
-            else if (info.architecture == GPUArchitecture::Mali_G715) {
-                features = features | RendererFeature::DescriptorIndexing;
-                features = features | RendererFeature::BindlessTextures;
-                features = features | RendererFeature::BindlessSamplers;
-                features = features | RendererFeature::SubgroupOperations;
-                features = features | RendererFeature::TimelineSemaphore;
-                features = features | RendererFeature::BufferDeviceAddress;
-                features = features | RendererFeature::Synchronization2;
-                features = features | RendererFeature::DynamicRendering;
-                features = features | RendererFeature::MaintenanceFeatures;
-                features = features | RendererFeature::MeshShaders;
-                features = features | RendererFeature::TaskShaders;
-                features = features | RendererFeature::RayTracing;
-                features = features | RendererFeature::VariableRateShading;
-                features = features | RendererFeature::ConservativeRasterization;
-                features = features | RendererFeature::DepthBoundsTest;
-                features = features | RendererFeature::FragmentStoresAndAtomics;
-                features = features | RendererFeature::ImageWriteWithoutFormat;
+            opt.use_afbc = true;
+            opt.use_tile_memory = true;
+            opt.use_subpass_merge = true;
+            opt.prefer_compute_shaders = true;
+            opt.use_descriptor_indexing = true;
+            opt.use_timeline_semaphores = (architecture_ >= GPUArchitecture::Mali_Valhall);
+            opt.use_dynamic_rendering = (architecture_ >= GPUArchitecture::Mali_Valhall);
+            opt.max_push_constants = 256;
+            opt.optimal_workgroup_size = 64;
+            
+            if (architecture_ == GPUArchitecture::Mali_G715 || architecture_ == GPUArchitecture::Mali_Valhall) {
+                opt.use_image_compression = true;
             }
             break;
         }
         case GPUVendor::PowerVR: {
-            // PowerVR Rogue (Series 8/9)
-            if (info.architecture == GPUArchitecture::PowerVR_Rogue) {
-                features = features | RendererFeature::SubgroupOperations; // Limited
-                features = features | RendererFeature::TimelineSemaphore;
-            }
-            // PowerVR Furian (Series 10)
-            else if (info.architecture == GPUArchitecture::PowerVR_Furian) {
-                features = features | RendererFeature::SubgroupOperations;
-                features = features | RendererFeature::TimelineSemaphore;
-                features = features | RendererFeature::DynamicRendering;
-                features = features | RendererFeature::DescriptorIndexing; // Basic
-            }
-            // PowerVR BXM (Series 11 - latest)
-            else if (info.architecture == GPUArchitecture::PowerVR_BXM) {
-                features = features | RendererFeature::DescriptorIndexing;
-                features = features | RendererFeature::BindlessTextures;
-                features = features | RendererFeature::SubgroupOperations;
-                features = features | RendererFeature::TimelineSemaphore;
-                features = features | RendererFeature::DynamicRendering;
-                features = features | RendererFeature::Synchronization2;
-                features = features | RendererFeature::MaintenanceFeatures;
-                features = features | RendererFeature::MeshShaders;
-                features = features | RendererFeature::TaskShaders;
-            }
-            break;
-        }
-        default:
-            break;
-    }
-
-    // Vulkan version features
-    if (info.vulkan_version >= 0x00010002) { // 1.2
-        features = features | RendererFeature::TimelineSemaphore;
-        features = features | RendererFeature::BufferDeviceAddress;
-    }
-    if (info.vulkan_version >= 0x00010003) { // 1.3
-        features = features | RendererFeature::Synchronization2;
-        features = features | RendererFeature::DynamicRendering;
-        features = features | RendererFeature::MaintenanceFeatures;
-    }
-
-    return features;
-}
-
-RendererConfig create_optimal_config(const GPUInfo& info) {
-    RendererConfig config;
-    config.preferred_backend = info.supports_vulkan ? RendererBackend::Vulkan : RendererBackend::OpenGLES;
-    config.required_features = get_recommended_features(info);
-    config.optional_features = RendererFeature::All;
-
-    // Vendor-specific optimizations
-    switch (info.vendor) {
-        case GPUVendor::Adreno: {
-            // Snapdragon 8+ (Adreno 700/800) - high performance
-            if (info.architecture == GPUArchitecture::Adreno_700 || info.architecture == GPUArchitecture::Adreno_800) {
-                config.enable_multithreaded_rendering = true;
-                config.enable_async_shader_compilation = true;
-                config.enable_command_buffer_reuse = true;
-                config.enable_pipeline_caching = true;
-                config.enable_descriptor_caching = true;
-                config.enable_draw_call_batching = true;
-                config.max_frames_in_flight = 3;
-                config.max_command_buffers_per_frame = 32;
-                config.max_descriptor_sets = 16384;
-                config.max_push_constants_size = 256;
-                config.texture_cache_size_mb = 1024;
-                config.shader_cache_size_mb = 256;
-                config.buffer_pool_size_mb = 512;
-                config.frame_timeout_ms = 5000;
-                config.vsync_enabled = true;
-                config.target_fps = 120; // High refresh rate displays
-                config.low_latency_mode = true;
-                config.battery_saver_mode = false;
-                config.thermal_throttling_aware = true;
-                config.thermal_throttle_threshold = 0.9f;
-            }
-            // Snapdragon 7/8 series (Adreno 600) - mid to high
-            else if (info.architecture == GPUArchitecture::Adreno_600) {
-                config.enable_multithreaded_rendering = true;
-                config.enable_async_shader_compilation = true;
-                config.enable_command_buffer_reuse = true;
-                config.enable_pipeline_caching = true;
-                config.max_frames_in_flight = 3;
-                config.max_command_buffers_per_frame = 16;
-                config.max_descriptor_sets = 8192;
-                config.max_push_constants_size = 256;
-                config.texture_cache_size_mb = 512;
-                config.shader_cache_size_mb = 128;
-                config.buffer_pool_size_mb = 256;
-                config.target_fps = 90;
-                config.low_latency_mode = true;
-                config.thermal_throttle_threshold = 0.85f;
-            }
-            break;
-        }
-        case GPUVendor::Mali: {
-            // Mali G715/Immortalis-G715 - flagship
-            if (info.architecture == GPUArchitecture::Mali_G715) {
-                config.enable_multithreaded_rendering = true;
-                config.enable_async_shader_compilation = true;
-                config.enable_command_buffer_reuse = true;
-                config.enable_pipeline_caching = true;
-                config.enable_descriptor_caching = true;
-                config.enable_draw_call_batching = true;
-                config.max_frames_in_flight = 2; // Mali prefers 2
-                config.max_command_buffers_per_frame = 16;
-                config.max_descriptor_sets = 8192;
-                config.max_push_constants_size = 256;
-                config.texture_cache_size_mb = 512;
-                config.shader_cache_size_mb = 128;
-                config.buffer_pool_size_mb = 256;
-                config.target_fps = 120;
-                config.low_latency_mode = true;
-                config.thermal_throttle_threshold = 0.85f;
-            }
-            // Mali Valhall (G71/G61/G710/G610) - high-end
-            else if (info.architecture == GPUArchitecture::Mali_Valhall) {
-                config.enable_multithreaded_rendering = true;
-                config.enable_async_shader_compilation = true;
-                config.enable_command_buffer_reuse = true;
-                config.enable_pipeline_caching = true;
-                config.max_frames_in_flight = 2;
-                config.max_command_buffers_per_frame = 16;
-                config.max_descriptor_sets = 8192;
-                config.max_push_constants_size = 256;
-                config.texture_cache_size_mb = 512;
-                config.shader_cache_size_mb = 128;
-                config.buffer_pool_size_mb = 256;
-                config.target_fps = 90;
-                config.low_latency_mode = true;
-                config.thermal_throttle_threshold = 0.8f;
-            }
-            // Mali Bifrost (G78/G77/G76/G57) - mid-range
-            else if (info.architecture == GPUArchitecture::Mali_Bifrost) {
-                config.enable_multithreaded_rendering = true;
-                config.enable_async_shader_compilation = true;
-                config.enable_command_buffer_reuse = true;
-                config.enable_pipeline_caching = true;
-                config.max_frames_in_flight = 2;
-                config.max_command_buffers_per_frame = 8;
-                config.max_descriptor_sets = 4096;
-                config.texture_cache_size_mb = 256;
-                config.shader_cache_size_mb = 64;
-                config.buffer_pool_size_mb = 128;
-                config.target_fps = 60;
-                config.thermal_throttle_threshold = 0.75f;
-            }
-            // Mali Midgard - older
-            else {
-                config.enable_multithreaded_rendering = false;
-                config.enable_async_shader_compilation = true;
-                config.enable_command_buffer_reuse = true;
-                config.max_frames_in_flight = 2;
-                config.texture_cache_size_mb = 128;
-                config.shader_cache_size_mb = 64;
-                config.buffer_pool_size_mb = 64;
-                config.target_fps = 60;
-                config.thermal_throttle_threshold = 0.7f;
-            }
-            break;
-        }
-        case GPUVendor::PowerVR: {
-            // PowerVR BXM - latest
-            if (info.architecture == GPUArchitecture::PowerVR_BXM) {
-                config.enable_multithreaded_rendering = false; // TBDR
-                config.enable_async_shader_compilation = true;
-                config.enable_command_buffer_reuse = true;
-                config.enable_pipeline_caching = true;
-                config.max_frames_in_flight = 2;
-                config.texture_cache_size_mb = 256;
-                config.shader_cache_size_mb = 128;
-                config.buffer_pool_size_mb = 128;
-                config.target_fps = 90;
-                config.low_latency_mode = true;
-                config.thermal_throttle_threshold = 0.85f;
-            }
-            // PowerVR Furian
-            else if (info.architecture == GPUArchitecture::PowerVR_Furian) {
-                config.enable_multithreaded_rendering = false;
-                config.enable_async_shader_compilation = true;
-                config.enable_command_buffer_reuse = true;
-                config.max_frames_in_flight = 2;
-                config.texture_cache_size_mb = 128;
-                config.shader_cache_size_mb = 64;
-                config.buffer_pool_size_mb = 64;
-                config.target_fps = 60;
-                config.thermal_throttle_threshold = 0.8f;
-            }
-            // PowerVR Rogue - older
-            else {
-                config.enable_multithreaded_rendering = false;
-                config.max_frames_in_flight = 2;
-                config.texture_cache_size_mb = 128;
-                config.shader_cache_size_mb = 64;
-                config.buffer_pool_size_mb = 64;
-                config.target_fps = 60;
-                config.thermal_throttle_threshold = 0.75f;
-            }
+            opt.use_image_compression = true;
+            opt.prefer_compute_shaders = true;
+            opt.use_descriptor_indexing = true;
+            opt.use_timeline_semaphores = (architecture_ >= GPUArchitecture::PowerVR_Furian);
+            opt.use_dynamic_rendering = (architecture_ >= GPUArchitecture::PowerVR_Furian);
+            opt.max_push_constants = 256;
+            opt.optimal_workgroup_size = 32;
             break;
         }
         default: {
-            config.enable_multithreaded_rendering = true;
-            config.max_frames_in_flight = 3;
-            config.texture_cache_size_mb = 256;
-            config.shader_cache_size_mb = 64;
-            config.buffer_pool_size_mb = 128;
-            config.target_fps = 60;
+            opt.optimal_workgroup_size = 64;
+            opt.max_push_constants = 128;
             break;
         }
     }
+    
+    return opt;
+}
 
-    // Thermal-aware settings
-    if (info.is_tiled_renderer) {
-        config.battery_saver_mode = false; // TBDR is inherently power efficient
+bool GPUCapabilities::detectAdreno() {
+    // Adreno detection via Vulkan vendor ID (0x5143 = Qualcomm)
+    // Or via GLES renderer string
+    return false;
+}
+
+bool GPUCapabilities::detectMali() {
+    // Mali detection via Vulkan vendor ID (0x13B5 = ARM)
+    return false;
+}
+
+bool GPUCapabilities::detectPowerVR() {
+    // PowerVR detection via Vulkan vendor ID (0x1010 = Imagination)
+    return false;
+}
+
+bool GPUCapabilities::detectGeneric() {
+    return false;
+}
+
+void GPUCapabilities::queryVulkanProperties() {
+    VkInstance instance;
+    VkApplicationInfo app_info{};
+    app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app_info.pApplicationName = "Copper Oxide GPU Detect";
+    app_info.apiVersion = VK_API_VERSION_1_3;
+    
+    VkInstanceCreateInfo create_info{};
+    create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    create_info.pApplicationInfo = &app_info;
+    
+    if (vkCreateInstance(&create_info, nullptr, &instance) != VK_SUCCESS) {
+        return;
     }
+    
+    uint32_t device_count = 0;
+    vkEnumeratePhysicalDevices(instance, &device_count, nullptr);
+    if (device_count > 0) {
+        std::vector<VkPhysicalDevice> devices(device_count);
+        vkEnumeratePhysicalDevices(instance, &device_count, devices.data());
+        
+        for (const auto& device : devices) {
+            VkPhysicalDeviceProperties props;
+            vkGetPhysicalDeviceProperties(device, &props);
+            
+            // Determine vendor from vendor ID
+            switch (props.vendorID) {
+                case 0x5143: // Qualcomm
+                    vendor_ = GPUVendor::Adreno;
+                    break;
+                case 0x13B5: // ARM
+                    vendor_ = GPUVendor::Mali;
+                    break;
+                case 0x1010: // Imagination
+                    vendor_ = GPUVendor::PowerVR;
+                    break;
+                default:
+                    vendor_ = GPUVendor::Unknown;
+                    break;
+            }
+            
+            // Determine architecture from device name
+            std::string device_name = props.deviceName;
+            std::transform(device_name.begin(), device_name.end(), device_name.begin(), ::tolower);
+            
+            if (vendor_ == GPUVendor::Adreno) {
+                if (device_name.find("830") != std::string::npos || device_name.find("adreno 830") != std::string::npos) {
+                    architecture_ = GPUArchitecture::Adreno_800;
+                } else if (device_name.find("730") != std::string::npos || device_name.find("740") != std::string::npos || 
+                           device_name.find("750") != std::string::npos || device_name.find("adreno 7") != std::string::npos) {
+                    architecture_ = GPUArchitecture::Adreno_700;
+                } else {
+                    architecture_ = GPUArchitecture::Adreno_600;
+                }
+            } else if (vendor_ == GPUVendor::Mali) {
+                if (device_name.find("g715") != std::string::npos || device_name.find("g720") != std::string::npos || 
+                    device_name.find("immortalis") != std::string::npos) {
+                    architecture_ = GPUArchitecture::Mali_G715;
+                } else if (device_name.find("valhall") != std::string::npos || device_name.find("g710") != std::string::npos) {
+                    architecture_ = GPUArchitecture::Mali_Valhall;
+                } else if (device_name.find("bifrost") != std::string::npos || device_name.find("g76") != std::string::npos ||
+                           device_name.find("g77") != std::string::npos || device_name.find("g78") != std::string::npos) {
+                    architecture_ = GPUArchitecture::Mali_Bifrost;
+                } else {
+                    architecture_ = GPUArchitecture::Mali_Midgard;
+                }
+            } else if (vendor_ == GPUVendor::PowerVR) {
+                if (device_name.find("bxm") != std::string::npos || device_name.find("bxm-8") != std::string::npos) {
+                    architecture_ = GPUArchitecture::PowerVR_BXM;
+                } else if (device_name.find("furian") != std::string::npos || device_name.find("rogue") != std::string::npos) {
+                    architecture_ = GPUArchitecture::PowerVR_Furian;
+                } else {
+                    architecture_ = GPUArchitecture::PowerVR_Rogue;
+                }
+            }
+            
+            // Query supported extensions
+            uint32_t ext_count = 0;
+            vkEnumerateDeviceExtensionProperties(device, nullptr, &ext_count, nullptr);
+            if (ext_count > 0) {
+                std::vector<VkExtensionProperties> extensions(ext_count);
+                vkEnumerateDeviceExtensionProperties(device, nullptr, &ext_count, extensions.data());
+                for (const auto& ext : extensions) {
+                    supported_extensions_.push_back(ext.extensionName);
+                }
+            }
+            
+            // Query features
+            VkPhysicalDeviceFeatures features;
+            vkGetPhysicalDeviceFeatures(device, &features);
+            
+            if (features.geometryShader) supported_features_ = supported_features_ | RendererFeature::GeometryShaders;
+            if (features.tessellationShader) supported_features_ = supported_features_ | RendererFeature::TessellationShaders;
+            if (features.multiDrawIndirect) supported_features_ = supported_features_ | RendererFeature::MultiDrawIndirect;
+            if (features.drawIndirectFirstInstance) supported_features_ = supported_features_ | RendererFeature::DrawIndirectCount;
+            
+            // Check for Vulkan 1.1+ features
+            VkPhysicalDeviceVulkan11Features features11{};
+            features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+            
+            VkPhysicalDeviceVulkan12Features features12{};
+            features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+            features12.pNext = &features11;
+            
+            VkPhysicalDeviceVulkan13Features features13{};
+            features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+            features13.pNext = &features12;
+            
+            VkPhysicalDeviceFeatures2 features2{};
+            features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            features2.pNext = &features13;
+            
+            vkGetPhysicalDeviceFeatures2(device, &features2);
+            
+            if (features11.storageBuffer16BitAccess) supported_features_ = supported_features_ | RendererFeature::StorageImageExtendedFormats;
+            if (features11.uniformAndStorageBuffer16BitAccess) supported_features_ = supported_features_ | RendererFeature::UniformBufferStandardLayout;
+            if (features12.descriptorIndexing) supported_features_ = supported_features_ | RendererFeature::DescriptorIndexing;
+            if (features12.timelineSemaphore) supported_features_ = supported_features_ | RendererFeature::TimelineSemaphore;
+            if (features12.bufferDeviceAddress) supported_features_ = supported_features_ | RendererFeature::BufferDeviceAddress;
+            if (features12.hostQueryReset) supported_features_ = supported_features_ | RendererFeature::HostQueryReset;
+            if (features13.dynamicRendering) supported_features_ = supported_features_ | RendererFeature::DynamicRendering;
+            if (features13.synchronization2) supported_features_ = supported_features_ | RendererFeature::Synchronization2;
+            if (features13.maintenance4) supported_features_ = supported_features_ | RendererFeature::MaintenanceFeatures;
+            
+            break; // Use first suitable device
+        }
+    }
+    
+    vkDestroyInstance(instance, nullptr);
+}
 
-    return config;
+void GPUCapabilities::queryGLESProperties() {
+    EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (display == EGL_NO_DISPLAY) return;
+    
+    EGLint major, minor;
+    if (!eglInitialize(display, &major, &minor)) return;
+    
+    const char* vendor = reinterpret_cast<const char*>(eglQueryString(display, EGL_VENDOR));
+    const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    const char* extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+    
+    if (vendor) {
+        std::string vendor_str(vendor);
+        std::transform(vendor_str.begin(), vendor_str.end(), vendor_str.begin(), ::tolower);
+        
+        if (vendor_str.find("qualcomm") != std::string::npos || vendor_str.find("adreno") != std::string::npos) {
+            vendor_ = GPUVendor::Adreno;
+        } else if (vendor_str.find("arm") != std::string::npos || vendor_str.find("mali") != std::string::npos) {
+            vendor_ = GPUVendor::Mali;
+        } else if (vendor_str.find("imagination") != std::string::npos || vendor_str.find("powervr") != std::string::npos) {
+            vendor_ = GPUVendor::PowerVR;
+        }
+    }
+    
+    if (renderer) {
+        std::string renderer_str(renderer);
+        std::transform(renderer_str.begin(), renderer_str.end(), renderer_str.begin(), ::tolower);
+        
+        if (vendor_ == GPUVendor::Adreno) {
+            if (renderer_str.find("830") != std::string::npos) {
+                architecture_ = GPUArchitecture::Adreno_800;
+            } else if (renderer_str.find("730") != std::string::npos || renderer_str.find("740") != std::string::npos ||
+                       renderer_str.find("750") != std::string::npos) {
+                architecture_ = GPUArchitecture::Adreno_700;
+            } else {
+                architecture_ = GPUArchitecture::Adreno_600;
+            }
+        } else if (vendor_ == GPUVendor::Mali) {
+            if (renderer_str.find("g715") != std::string::npos || renderer_str.find("g720") != std::string::npos ||
+                renderer_str.find("immortalis") != std::string::npos) {
+                architecture_ = GPUArchitecture::Mali_G715;
+            } else if (renderer_str.find("valhall") != std::string::npos || renderer_str.find("g710") != std::string::npos) {
+                architecture_ = GPUArchitecture::Mali_Valhall;
+            } else if (renderer_str.find("bifrost") != std::string::npos || renderer_str.find("g76") != std::string::npos ||
+                       renderer_str.find("g77") != std::string::npos || renderer_str.find("g78") != std::string::npos) {
+                architecture_ = GPUArchitecture::Mali_Bifrost;
+            } else {
+                architecture_ = GPUArchitecture::Mali_Midgard;
+            }
+        } else if (vendor_ == GPUVendor::PowerVR) {
+            if (renderer_str.find("bxm") != std::string::npos) {
+                architecture_ = GPUArchitecture::PowerVR_BXM;
+            } else if (renderer_str.find("furian") != std::string::npos) {
+                architecture_ = GPUArchitecture::PowerVR_Furian;
+            } else {
+                architecture_ = GPUArchitecture::PowerVR_Rogue;
+            }
+        }
+    }
+    
+    if (extensions) {
+        std::string ext_str(extensions);
+        std::istringstream iss(ext_str);
+        std::string ext;
+        while (iss >> ext) {
+            supported_extensions_.push_back(ext);
+        }
+    }
+    
+    // Query GLES features
+    if (glGetStringi) {
+        GLint num_ext = 0;
+        glGetIntegerv(GL_NUM_EXTENSIONS, &num_ext);
+        for (GLint i = 0; i < num_ext; ++i) {
+            const char* ext = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, i));
+            if (ext) supported_extensions_.push_back(ext);
+        }
+    }
+    
+    // Check for compute shaders (GLES 3.1+)
+    if (strstr(version, "OpenGL ES 3.1") || strstr(version, "OpenGL ES 3.2")) {
+        supported_features_ = supported_features_ | RendererFeature::ComputeShaders;
+    }
+    
+    // Check for geometry shaders
+    if (std::find(supported_extensions_.begin(), supported_extensions_.end(), "GL_EXT_geometry_shader") != supported_extensions_.end() ||
+        std::find(supported_extensions_.begin(), supported_extensions_.end(), "GL_OES_geometry_shader") != supported_extensions_.end()) {
+        supported_features_ = supported_features_ | RendererFeature::GeometryShaders;
+    }
+    
+    // Check for tessellation
+    if (std::find(supported_extensions_.begin(), supported_extensions_.end(), "GL_EXT_tessellation_shader") != supported_extensions_.end() ||
+        std::find(supported_extensions_.begin(), supported_extensions_.end(), "GL_OES_tessellation_shader") != supported_extensions_.end()) {
+        supported_features_ = supported_features_ | RendererFeature::TessellationShaders;
+    }
+    
+    eglTerminate(display);
 }
 
 } // namespace copper
