@@ -1,7 +1,8 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    kotlin("multiplatform")
+    id("dev.zacsweers.spotless") version "6.25.0"
+    id("io.gitlab.arturbosch.detekt") version "1.23.6"
 }
 
 android {
@@ -19,8 +20,8 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags = listOf("-std=c++20", "-fexceptions", "-frtti", "-Wall", "-Wextra")
-                arguments = listOf("-DANDROID_STL=c++_shared", "-DCMAKE_CXX_STANDARD=20")
+                cppFlags = listOf("-std=c++20", "-fexceptions", "-frtti", "-Wall", "-Wextra", "-O3", "-flto")
+                arguments = listOf("-DANDROID_STL=c++_shared", "-DCMAKE_CXX_STANDARD=20", "-DCMAKE_CXX_STANDARD_REQUIRED=ON")
                 abiFilters = listOf("arm64-v8a")
             }
         }
@@ -42,6 +43,7 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+        freeCompilerArgs = listOf("-Xopt-in=kotlin.RequiresOptIn", "-Xjvm-default=all")
     }
 
     packagingOptions {
@@ -63,12 +65,19 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("release") ?: null
+            debuggable = false
+            jniDebuggable = false
+            renderscriptDebuggable = false
+            pseudoLocalesEnabled = false
         }
         debug {
             isMinifyEnabled = false
+            isShrinkResources = false
             isDebuggable = true
+            jniDebuggable = true
         }
     }
 
@@ -127,35 +136,26 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest:1.7.5")
 }
 
-kotlin {
-    android()
-    iosArm64()
-    iosSimulatorArm64()
-    iosX64()
-
-    sourceSets {
-        val commonMain by getting {
-            dependencies {
-                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
-                implementation("org.jetbrains.kotlin:kotlin-stdlib-common:1.9.20")
-            }
-        }
-        val commonTest by getting {
-            dependencies {
-                implementation("org.jetbrains.kotlin:kotlin-test:1.9.20")
-                implementation("org.jetbrains.kotlin:kotlin-test-junit:1.9.20")
-            }
-        }
+spotless {
+    kotlin {
+        target("*.kt", "*.kts")
+        kotlinGradlePlugin()
+        ktlint("1.2.1")
     }
 }
 
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-    kotlinOptions {
-        freeCompilerArgs += listOf("-Xopt-in=kotlin.RequiresOptIn")
+detekt {
+    toolVersion = "1.23.6"
+    config = files("$projectDir/config/detekt/detekt.yml")
+    buildUponDefaultConfig = true
+    reports {
+        html.required.set(true)
+        xml.required.set(true)
+        txt.required.set(false)
+        sarif.required.set(false)
     }
 }
 
-android {
-    namespace = "com.oxide.mc.copperoxide"
+tasks.named("detekt") {
+    dependsOn("spotlessKotlinApply")
 }

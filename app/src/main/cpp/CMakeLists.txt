@@ -8,8 +8,19 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Android-specific settings
 if(ANDROID)
     set(CMAKE_ANDROID_STL c++_shared)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -frtti -Wall -Wextra")
-    add_definitions(-DANDROID -D__ANDROID__)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -frtti -Wall -Wextra -O3 -flto=thin")
+    add_definitions(-DANDROID -D__ANDROID__ -DNDEBUG)
+    
+    # Link time optimization
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -flto=thin -O3")
+    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -flto=thin -O3")
+    set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -flto=thin -O3")
+endif()
+
+# Build type configurations
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
 endif()
 
 # Include directories
@@ -92,6 +103,9 @@ target_link_libraries(copper-oxide
 # Set output directory
 set_target_properties(copper-oxide PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../jniLibs/${ANDROID_ABI}
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+    POSITION_INDEPENDENT_CODE ON
 )
 
 # Install headers

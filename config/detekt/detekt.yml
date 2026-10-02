@@ -1,0 +1,127 @@
+# Detekt configuration for Copper Oxide
+
+# Disable rules that are too strict for our codebase
+Style:
+  MagicNumber:
+    active: false
+  MaxLineLength:
+    maxLineLength: 160
+    active: true
+  WildcardImport:
+    active: false
+  UnusedImports:
+    active: true
+  UnnecessaryAbstractClass:
+    active: false
+  ReturnCount:
+    max: 5
+    active: true
+
+Naming:
+  FunctionNaming:
+    active: true
+  ClassNaming:
+    active: true
+  VariableNaming:
+    active: true
+  MemberNameEqualsClassName:
+    active: false
+
+Complexity:
+  ComplexMethod:
+    threshold: 20
+    active: true
+  LongMethod:
+    threshold: 60
+    active: true
+  LongParameterList:
+    threshold: 7
+    active: true
+  NestedBlockDepth:
+    threshold: 4
+    active: true
+
+Exceptions:
+  TooGenericExceptionCaught:
+    active: false
+  TooGenericExceptionThrown:
+    active: false
+  InstanceOfCheckForException:
+    active: false
+  NotImplementedDeclaration:
+    active: false
+  ThrowingExceptionFromFinally:
+    active: true
+  ThrowingExceptionInMain:
+    active: true
+  ThrowingExceptionsWithoutMessageOrCause:
+    active: false
+  ThrowingNewInstanceOfSameException:
+    active: true
+
+PotentialBugs:
+  UnreachableCode:
+    active: true
+  ReturnFromFinally:
+    active: true
+  UnusedPrivateMember:
+    active: true
+  VarCouldBeVal:
+    active: true
+  DeprecatedBlockOrFunctionCall:
+    active: true
+
+Performance:
+  SpreadOperator:
+    active: true
+  ArrayPrimitive:
+    active: false
+  ForEachOnRange:
+    active: true
+
+Formatting:
+  Indentation:
+    active: true
+    indentSize: 4
+    continuationIndentSize: 4
+  MaximumLineLength:
+    maxLineLength: 160
+    active: true
+  NoMultipleSpaces:
+    active: true
+  NoTrailingSpaces:
+    active: true
+  NoWildcardImports:
+    active: false
+  PackageName:
+    active: true
+  ImportOrdering:
+    active: true
+  TrailingComma:
+    active: true
+  TrailingCommaOnCallSite:
+    active: true
+    singleElementOnly: false
+
+Comments:
+  CommentOverPrivateFunction:
+    active: false
+  CommentOverPrivateProperty:
+    active: false
+  EndOfSentenceFormat:
+    active: true
+  NoEmptyFirstLineInCommentBlock:
+    active: true
+
+build:
+  maxIssues: 0
+  weights:
+    complexity: 2
+    LongParameterList: 1
+    style: 1
+    comments: 1
+
+consoleReports:
+  active: true
+  excludeRuleSets: []
+  minSeverity: 0
