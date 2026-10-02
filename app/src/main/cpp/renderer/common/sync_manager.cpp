@@ -12,8 +12,8 @@ public:
     struct Fence {
         uint64_t handle = 0;
         bool signaled = false;
-        std::mutex mutex;
-        std::condition_variable cv;
+        std::unique_ptr<std::mutex> mutex = std::make_unique<std::mutex>();
+        std::unique_ptr<std::condition_variable> cv = std::make_unique<std::condition_variable>();
     };
 
     struct Semaphore {
@@ -91,7 +91,6 @@ void SyncManager::destroyFence(uint64_t handle) {
 }
 
 bool SyncManager::waitFence(uint64_t handle, uint64_t timeout_ns) {
-    std::unique_lock<std::mutex> lock(pImpl->mutex);
     auto it = pImpl->fences.find(handle);
     if (it == pImpl->fences.end()) {
         return false;
@@ -105,7 +104,8 @@ bool SyncManager::waitFence(uint64_t handle, uint64_t timeout_ns) {
         return false;
     }
 
-    return it->second.cv.wait_for(lock, std::chrono::nanoseconds(timeout_ns), [&]() {
+    std::unique_lock<std::mutex> lock(*it->second.mutex);
+    return it->second.cv->wait_for(lock, std::chrono::nanoseconds(timeout_ns), [&]() {
         return it->second.signaled;
     });
 }
@@ -116,8 +116,9 @@ void SyncManager::signalFence(uint64_t handle) {
     if (it == pImpl->fences.end()) {
         return;
     }
+    std::lock_guard<std::mutex> fence_lock(*it->second.mutex);
     it->second.signaled = true;
-    it->second.cv.notify_all();
+    it->second.cv->notify_all();
     onSignalFence(handle);
 }
 

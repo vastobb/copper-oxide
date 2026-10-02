@@ -79,7 +79,7 @@ uint64_t ResourcePool::allocateBuffer(uint64_t size, uint32_t usage, uint32_t me
     pImpl->stats.pool_misses++;
     
     uint64_t handle = pImpl->next_handle++;
-    PooledResource resource;
+    Impl::PooledResource resource;
     resource.handle = handle;
     resource.type = ResourceType::Buffer;
     resource.size = size;
