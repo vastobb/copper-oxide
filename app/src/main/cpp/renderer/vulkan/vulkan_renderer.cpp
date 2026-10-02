@@ -434,7 +434,6 @@ void VulkanRenderer::onPresent() {
     present_info.pWaitSemaphores = &render_finished_semaphores_[current_frame_];
     present_info.swapchainCount = 1;
     present_info.pSwapchains = &swapchain_;
-    present_info.imageIndexCount = 1;
     present_info.pImageIndices = &image_index_;
 
     fp_vkQueuePresentKHR(graphics_queue_, &present_info);
