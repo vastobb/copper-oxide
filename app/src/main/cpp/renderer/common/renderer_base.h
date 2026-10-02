@@ -18,6 +18,7 @@ class CommandBuffer;
 class SyncManager;
 class ResourcePool;
 class Profiler;
+class RendererConfig;
 
 enum class RendererBackend : uint8_t {
     Unknown = 0,
