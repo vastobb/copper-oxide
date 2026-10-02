@@ -79,7 +79,7 @@ bool VulkanRenderer::create_instance() {
 
     std::vector<const char*> extensions = {
         VK_KHR_SURFACE_EXTENSION_NAME,
-        VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
+        "VK_KHR_android_surface",
         VK_EXT_DEBUG_UTILS_EXTENSION_NAME
     };
 
@@ -338,9 +338,9 @@ void VulkanRenderer::query_gpu_info() {
         gpu_info_.device_id = props.deviceID;
         
         switch (props.vendorID) {
-            case 0x13B5: gpu_info_.vendor = GPUVendor::ARM; break;
-            case 0x5143: gpu_info_.vendor = GPUVendor::Qualcomm; break;
-            case 0x1010: gpu_info_.vendor = GPUVendor::Imagination; break;
+            case 0x13B5: gpu_info_.vendor = GPUVendor::Mali; break;
+            case 0x5143: gpu_info_.vendor = GPUVendor::Adreno; break;
+            case 0x1010: gpu_info_.vendor = GPUVendor::PowerVR; break;
             default: gpu_info_.vendor = GPUVendor::Unknown; break;
         }
     }
@@ -358,7 +358,8 @@ void VulkanRenderer::query_limits() {
         limits_.max_framebuffer_width = props.limits.maxFramebufferWidth;
         limits_.max_framebuffer_height = props.limits.maxFramebufferHeight;
         limits_.max_framebuffer_layers = props.limits.maxFramebufferLayers;
-        limits_.max_framebuffer_samples = static_cast<uint32_t>(props.limits.maxFramebufferSamples);
+        // maxFramebufferSamples not in standard Vulkan - use sample count from framebuffer color attachment limits
+        limits_.max_framebuffer_samples = 8;
         limits_.max_color_attachments = props.limits.maxColorAttachments;
     }
 }

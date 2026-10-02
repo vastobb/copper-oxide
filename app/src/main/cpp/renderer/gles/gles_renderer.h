@@ -149,13 +149,11 @@ private:
     // Threading
     std::thread shader_compiler_thread_;
     std::atomic<bool> shader_compiler_running_{false};
+    std::mutex frame_mutex_;
 
     // Private methods
-    bool initialize_egl(void* window_handle);
-    void terminate_egl();
+    bool init_egl();
     bool create_egl_context();
-    bool create_egl_surface();
-    void destroy_egl_surface();
     void query_gpu_info();
     void query_limits();
     void query_extensions();
