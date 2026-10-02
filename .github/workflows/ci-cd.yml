@@ -149,11 +149,15 @@ jobs:
       - name: Verify library
         run: |
           set -euo pipefail
-          # The Android Gradle Plugin owns the output location for an
-          # externalNativeBuild, so the library is located rather than assumed.
-          # Hard-coding a path here is what let the library ship in the APK for
-          # the first time while this step still passed.
-          mapfile -t libs < <(find app/build -name 'libcopper-oxide.so' -type f | sort)
+          # The library is located rather than assumed. Hard-coding a path here is
+          # what let the library be absent from every APK while this step still
+          # passed, because the path it asserted came from a CMake override that
+          # sent the .so somewhere AGP does not package from.
+          # This job drives CMake directly, so the output lands in
+          # app/src/main/cpp/build rather than in AGP's cxx intermediates. Both
+          # locations are searched so the check does not depend on which of them
+          # produced the library.
+          mapfile -t libs < <(find app -name 'libcopper-oxide.so' -type f | sort)
           if [ "${#libs[@]}" -eq 0 ]; then
             echo "::error::libcopper-oxide.so was not produced by the native build"
             exit 1
@@ -174,7 +178,7 @@ jobs:
         with:
           name: native-lib
           path: |
-            app/build/**/libcopper-oxide.so
+            app/src/main/cpp/build/libcopper-oxide.so
           retention-days: 7
           if-no-files-found: error
 
