@@ -44,6 +44,23 @@ public:
         std::string debug_name;
     };
 
+    struct ShaderModule {
+        uint64_t handle = 0;
+        ShaderStage stage = ShaderStage::Vertex;
+        std::vector<uint32_t> spirv;
+        std::string entry_point = "main";
+        std::string debug_name;
+    };
+
+    struct ShaderProgram {
+        uint64_t handle = 0;
+        uint64_t vertex_shader = 0;
+        uint64_t fragment_shader = 0;
+        uint64_t compute_shader = 0;
+        std::vector<ShaderStage> stages;
+        std::string debug_name;
+    };
+
     struct Pipeline {
         uint64_t handle = 0;
         uint64_t vertex_shader = 0;

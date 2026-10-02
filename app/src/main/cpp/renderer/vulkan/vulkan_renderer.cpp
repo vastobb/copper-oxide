@@ -11,121 +11,64 @@
 
 namespace copper {
 
-class VulkanRenderer::Impl {
-public:
-    VkInstance instance = VK_NULL_HANDLE;
-    VkPhysicalDevice physical_device = VK_NULL_HANDLE;
-    VkDevice device = VK_NULL_HANDLE;
-    VkQueue graphics_queue = VK_NULL_HANDLE;
-    VkQueue present_queue = VK_NULL_HANDLE;
-    VkQueue compute_queue = VK_NULL_HANDLE;
-    uint32_t graphics_queue_family = UINT32_MAX;
-    uint32_t present_queue_family = UINT32_MAX;
-    uint32_t compute_queue_family = UINT32_MAX;
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
-    std::vector<VkImage> swapchain_images;
-    std::vector<VkImageView> swapchain_image_views;
-    VkFormat swapchain_format = VK_FORMAT_B8G8R8A8_SRGB;
-    VkColorSpaceKHR swapchain_color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-    VkExtent2D swapchain_extent{};
-    uint32_t current_frame = 0;
-    uint32_t max_frames_in_flight = 3;
-    std::vector<VkSemaphore> image_available_semaphores;
-    std::vector<VkSemaphore> render_finished_semaphores;
-    std::vector<VkFence> in_flight_fences;
-    std::vector<VkFence> images_in_flight;
-    VkCommandPool command_pool = VK_NULL_HANDLE;
-    std::vector<VkCommandBuffer> command_buffers;
-    VkRenderPass render_pass = VK_NULL_HANDLE;
-    std::vector<VkFramebuffer> framebuffers;
-    VkPipelineCache pipeline_cache = VK_NULL_HANDLE;
-    VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
-    VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
-    bool debug_markers_enabled = false;
-    bool validation_enabled = false;
-    std::mutex mutex;
-    RendererConfig config;
-    PFN_vkCreateDebugUtilsMessengerEXT vkCreateDebugUtilsMessengerEXT = nullptr;
-    PFN_vkDestroyDebugUtilsMessengerEXT vkDestroyDebugUtilsMessengerEXT = nullptr;
-    PFN_vkCmdBeginDebugUtilsLabelEXT vkCmdBeginDebugUtilsLabelEXT = nullptr;
-    PFN_vkCmdEndDebugUtilsLabelEXT vkCmdEndDebugUtilsLabelEXT = nullptr;
-    PFN_vkCmdInsertDebugUtilsLabelEXT vkCmdInsertDebugUtilsLabelEXT = nullptr;
-    PFN_vkSetDebugUtilsObjectNameEXT vkSetDebugUtilsObjectNameEXT = nullptr;
-};
-
-VulkanRenderer::VulkanRenderer() : RendererBase(), pImpl(std::make_unique<Impl>()) {}
+VulkanRenderer::VulkanRenderer() : RendererBase() {}
 VulkanRenderer::~VulkanRenderer() = default;
 
 bool VulkanRenderer::initialize(const RendererConfig& config) {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    std::lock_guard<std::mutex> lock(frame_mutex_);
     
     if (!RendererBase::initialize(config)) {
         return false;
     }
     
-    pImpl->config = config;
-    pImpl->max_frames_in_flight = config.maxFramesInFlight;
-    pImpl->validation_enabled = config.enableValidation;
-    pImpl->debug_markers_enabled = config.enableDebugMarkers;
-
-    if (!createInstance()) return false;
-    if (!setupDebugMessenger()) return false;
-    if (!pickPhysicalDevice()) return false;
-    if (!createLogicalDevice()) return false;
-    if (!createSwapchain()) return false;
-    if (!createImageViews()) return false;
-    if (!createRenderPass()) return false;
-    if (!createCommandPool()) return false;
-    if (!createCommandBuffers()) return false;
-    if (!createSyncObjects()) return false;
-    if (!createFramebuffers()) return false;
-
-    pImpl->initialized = true;
+    config_ = config;
+    // Note: max_frames_in_flight is used in base class
+    
+    if (!create_instance()) return false;
+    if (!setup_debug_messenger()) return false;
+    if (!select_physical_device()) return false;
+    if (!create_logical_device()) return false;
+    if (!create_swapchain()) return false;
+    if (!create_sync_objects()) return false;
+    
+    initialized_ = true;
     return true;
 }
 
 void VulkanRenderer::shutdown() {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    std::lock_guard<std::mutex> lock(frame_mutex_);
     
-    if (pImpl->device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(pImpl->device);
+    if (device_ != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device_);
     }
 
-    for (auto fence : pImpl->in_flight_fences) {
-        vkDestroyFence(pImpl->device, fence, nullptr);
+    for (auto fence : in_flight_fences_) {
+        vkDestroyFence(device_, fence, nullptr);
     }
-    for (auto semaphore : pImpl->render_finished_semaphores) {
-        vkDestroySemaphore(pImpl->device, semaphore, nullptr);
+    for (auto semaphore : render_finished_semaphores_) {
+        vkDestroySemaphore(device_, semaphore, nullptr);
     }
-    for (auto semaphore : pImpl->image_available_semaphores) {
-        vkDestroySemaphore(pImpl->device, semaphore, nullptr);
+    for (auto semaphore : image_available_semaphores_) {
+        vkDestroySemaphore(device_, semaphore, nullptr);
     }
 
-    vkDestroyCommandPool(pImpl->device, pImpl->command_pool, nullptr);
-    for (auto framebuffer : pImpl->framebuffers) {
-        vkDestroyFramebuffer(pImpl->device, framebuffer, nullptr);
-    }
-    vkDestroyRenderPass(pImpl->device, pImpl->render_pass, nullptr);
-    for (auto image_view : pImpl->swapchain_image_views) {
-        vkDestroyImageView(pImpl->device, image_view, nullptr);
-    }
-    vkDestroySwapchainKHR(pImpl->device, pImpl->swapchain, nullptr);
-    vkDestroyPipelineCache(pImpl->device, pImpl->pipeline_cache, nullptr);
-    vkDestroyDescriptorPool(pImpl->device, pImpl->descriptor_pool, nullptr);
-    vkDestroyDevice(pImpl->device, nullptr);
+    vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
+    vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
+    vkDestroyDevice(device_, nullptr);
 
-    if (pImpl->debug_messenger != VK_NULL_HANDLE && pImpl->vkDestroyDebugUtilsMessengerEXT) {
-        pImpl->vkDestroyDebugUtilsMessengerEXT(pImpl->instance, pImpl->debug_messenger, nullptr);
+    if (debug_messenger_ != VK_NULL_HANDLE && vkDestroyDebugUtilsMessengerEXT_) {
+        vkDestroyDebugUtilsMessengerEXT_(instance_, debug_messenger_, nullptr);
     }
-    vkDestroySurfaceKHR(pImpl->instance, pImpl->surface, nullptr);
-    vkDestroyInstance(pImpl->instance, nullptr);
+    if (surface_ != VK_NULL_HANDLE) {
+        vkDestroySurfaceKHR(instance_, surface_, nullptr);
+    }
+    vkDestroyInstance(instance_, nullptr);
 
     RendererBase::shutdown();
-    pImpl->initialized = false;
+    initialized_ = false;
 }
 
-bool VulkanRenderer::createInstance() {
+bool VulkanRenderer::create_instance() {
     VkApplicationInfo app_info{};
     app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app_info.pApplicationName = "Copper Oxide";
@@ -141,7 +84,7 @@ bool VulkanRenderer::createInstance() {
     };
 
     std::vector<const char*> layers;
-    if (pImpl->validation_enabled) {
+    if (config_.enableValidation) {
         layers.push_back("VK_LAYER_KHRONOS_validation");
     }
 
@@ -153,27 +96,27 @@ bool VulkanRenderer::createInstance() {
     create_info.enabledLayerCount = static_cast<uint32_t>(layers.size());
     create_info.ppEnabledLayerNames = layers.data();
 
-    VkResult result = vkCreateInstance(&create_info, nullptr, &pImpl->instance);
+    VkResult result = vkCreateInstance(&create_info, nullptr, &instance_);
     return result == VK_SUCCESS;
 }
 
-bool VulkanRenderer::setupDebugMessenger() {
-    if (!pImpl->validation_enabled) return true;
+bool VulkanRenderer::setup_debug_messenger() {
+    if (!config_.enableValidation) return true;
 
-    pImpl->vkCreateDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
-        vkGetInstanceProcAddr(pImpl->instance, "vkCreateDebugUtilsMessengerEXT"));
-    pImpl->vkDestroyDebugUtilsMessengerEXT = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
-        vkGetInstanceProcAddr(pImpl->instance, "vkDestroyDebugUtilsMessengerEXT"));
-    pImpl->vkCmdBeginDebugUtilsLabelEXT = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
-        vkGetInstanceProcAddr(pImpl->instance, "vkCmdBeginDebugUtilsLabelEXT"));
-    pImpl->vkCmdEndDebugUtilsLabelEXT = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
-        vkGetInstanceProcAddr(pImpl->instance, "vkCmdEndDebugUtilsLabelEXT"));
-    pImpl->vkCmdInsertDebugUtilsLabelEXT = reinterpret_cast<PFN_vkCmdInsertDebugUtilsLabelEXT>(
-        vkGetInstanceProcAddr(pImpl->instance, "vkCmdInsertDebugUtilsLabelEXT"));
-    pImpl->vkSetDebugUtilsObjectNameEXT = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
-        vkGetInstanceProcAddr(pImpl->instance, "vkSetDebugUtilsObjectNameEXT"));
+    vkCreateDebugUtilsMessengerEXT_ = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+        vkGetInstanceProcAddr(instance_, "vkCreateDebugUtilsMessengerEXT"));
+    vkDestroyDebugUtilsMessengerEXT_ = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+        vkGetInstanceProcAddr(instance_, "vkDestroyDebugUtilsMessengerEXT"));
+    vkCmdBeginDebugUtilsLabelEXT_ = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(
+        vkGetInstanceProcAddr(instance_, "vkCmdBeginDebugUtilsLabelEXT"));
+    vkCmdEndDebugUtilsLabelEXT_ = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(
+        vkGetInstanceProcAddr(instance_, "vkCmdEndDebugUtilsLabelEXT"));
+    vkCmdInsertDebugUtilsLabelEXT_ = reinterpret_cast<PFN_vkCmdInsertDebugUtilsLabelEXT>(
+        vkGetInstanceProcAddr(instance_, "vkCmdInsertDebugUtilsLabelEXT"));
+    vkSetDebugUtilsObjectNameEXT_ = reinterpret_cast<PFN_vkSetDebugUtilsObjectNameEXT>(
+        vkGetInstanceProcAddr(instance_, "vkSetDebugUtilsObjectNameEXT"));
 
-    if (!pImpl->vkCreateDebugUtilsMessengerEXT) return false;
+    if (!vkCreateDebugUtilsMessengerEXT_) return false;
 
     VkDebugUtilsMessengerCreateInfoEXT create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
@@ -190,16 +133,16 @@ bool VulkanRenderer::setupDebugMessenger() {
         return VK_FALSE;
     };
 
-    return pImpl->vkCreateDebugUtilsMessengerEXT(pImpl->instance, &create_info, nullptr, &pImpl->debug_messenger) == VK_SUCCESS;
+    return vkCreateDebugUtilsMessengerEXT_(instance_, &create_info, nullptr, &debug_messenger_) == VK_SUCCESS;
 }
 
-bool VulkanRenderer::pickPhysicalDevice() {
+bool VulkanRenderer::select_physical_device() {
     uint32_t device_count = 0;
-    vkEnumeratePhysicalDevices(pImpl->instance, &device_count, nullptr);
+    vkEnumeratePhysicalDevices(instance_, &device_count, nullptr);
     if (device_count == 0) return false;
 
     std::vector<VkPhysicalDevice> devices(device_count);
-    vkEnumeratePhysicalDevices(pImpl->instance, &device_count, devices.data());
+    vkEnumeratePhysicalDevices(instance_, &device_count, devices.data());
 
     for (const auto& device : devices) {
         VkPhysicalDeviceProperties props;
@@ -213,7 +156,9 @@ bool VulkanRenderer::pickPhysicalDevice() {
         // ... feature checks
 
         if (suitable) {
-            pImpl->physical_device = device;
+            physical_device_ = device;
+            query_gpu_info();
+            query_limits();
             return true;
         }
     }
@@ -221,37 +166,22 @@ bool VulkanRenderer::pickPhysicalDevice() {
     return false;
 }
 
-bool VulkanRenderer::createLogicalDevice() {
+bool VulkanRenderer::create_logical_device() {
     // Simplified - in reality would query queue families, etc.
     return true;
 }
 
-bool VulkanRenderer::createSwapchain() {
+bool VulkanRenderer::create_swapchain() {
     // Simplified
     return true;
 }
 
-bool VulkanRenderer::createImageViews() {
-    return true;
-}
-
-bool VulkanRenderer::createRenderPass() {
-    return true;
-}
-
-bool VulkanRenderer::createCommandPool() {
-    return true;
-}
-
-bool VulkanRenderer::createCommandBuffers() {
-    return true;
-}
-
-bool VulkanRenderer::createSyncObjects() {
-    pImpl->image_available_semaphores.resize(pImpl->max_frames_in_flight);
-    pImpl->render_finished_semaphores.resize(pImpl->max_frames_in_flight);
-    pImpl->in_flight_fences.resize(pImpl->max_frames_in_flight);
-    pImpl->images_in_flight.resize(pImpl->max_frames_in_flight, VK_NULL_HANDLE);
+bool VulkanRenderer::create_sync_objects() {
+    uint32_t max_frames = config_.maxFramesInFlight;
+    image_available_semaphores_.resize(max_frames);
+    render_finished_semaphores_.resize(max_frames);
+    in_flight_fences_.resize(max_frames);
+    images_in_flight_.resize(max_frames, VK_NULL_HANDLE);
 
     VkSemaphoreCreateInfo semaphore_info{};
     semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -260,10 +190,10 @@ bool VulkanRenderer::createSyncObjects() {
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    for (size_t i = 0; i < pImpl->max_frames_in_flight; i++) {
-        if (vkCreateSemaphore(pImpl->device, &semaphore_info, nullptr, &pImpl->image_available_semaphores[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(pImpl->device, &semaphore_info, nullptr, &pImpl->render_finished_semaphores[i]) != VK_SUCCESS ||
-            vkCreateFence(pImpl->device, &fence_info, nullptr, &pImpl->in_flight_fences[i]) != VK_SUCCESS) {
+    for (size_t i = 0; i < max_frames; i++) {
+        if (vkCreateSemaphore(device_, &semaphore_info, nullptr, &image_available_semaphores_[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(device_, &semaphore_info, nullptr, &render_finished_semaphores_[i]) != VK_SUCCESS ||
+            vkCreateFence(device_, &fence_info, nullptr, &in_flight_fences_[i]) != VK_SUCCESS) {
             return false;
         }
     }
@@ -271,19 +201,30 @@ bool VulkanRenderer::createSyncObjects() {
     return true;
 }
 
-bool VulkanRenderer::createFramebuffers() {
-    return true;
+bool VulkanRenderer::beginFrame() {
+    if (!initialized_) return false;
+    return RendererBase::beginFrame();
+}
+
+void VulkanRenderer::endFrame() {
+    if (!initialized_) return;
+    RendererBase::endFrame();
+}
+
+void VulkanRenderer::present() {
+    if (!initialized_) return;
+    RendererBase::present();
 }
 
 bool VulkanRenderer::onBeginFrame() {
     // Wait for fence
-    vkWaitForFences(pImpl->device, 1, &pImpl->in_flight_fences[pImpl->current_frame], VK_TRUE, UINT64_MAX);
-    vkResetFences(pImpl->device, 1, &pImpl->in_flight_fences[pImpl->current_frame]);
+    vkWaitForFences(device_, 1, &in_flight_fences_[current_frame_], VK_TRUE, UINT64_MAX);
+    vkResetFences(device_, 1, &in_flight_fences_[current_frame_]);
 
     // Acquire next image
     uint32_t image_index;
-    VkResult result = vkAcquireNextImageKHR(pImpl->device, pImpl->swapchain, UINT64_MAX,
-                                            pImpl->image_available_semaphores[pImpl->current_frame],
+    VkResult result = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
+                                            image_available_semaphores_[current_frame_],
                                             VK_NULL_HANDLE, &image_index);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -292,59 +233,60 @@ bool VulkanRenderer::onBeginFrame() {
     }
 
     // Reset command buffer
-    vkResetCommandBuffer(pImpl->command_buffers[pImpl->current_frame], 0);
+    // vkResetCommandBuffer(command_buffers_[current_frame_], 0);
 
     // Begin command buffer
-    VkCommandBufferBeginInfo begin_info{};
-    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vkBeginCommandBuffer(pImpl->command_buffers[pImpl->current_frame], &begin_info);
+    // VkCommandBufferBeginInfo begin_info{};
+    // begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    // vkBeginCommandBuffer(command_buffers_[current_frame_], &begin_info);
 
     return true;
 }
 
 void VulkanRenderer::onEndFrame() {
     // End command buffer
-    vkEndCommandBuffer(pImpl->command_buffers[pImpl->current_frame]);
+    // vkEndCommandBuffer(command_buffers_[current_frame_]);
 
     // Submit command buffer
-    VkSubmitInfo submit_info{};
-    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    // VkSubmitInfo submit_info{};
+    // submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    VkSemaphore wait_semaphores[] = {pImpl->image_available_semaphores[pImpl->current_frame]};
-    VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-    submit_info.waitSemaphoreCount = 1;
-    submit_info.pWaitSemaphores = wait_semaphores;
-    submit_info.pWaitDstStageMask = wait_stages;
-    submit_info.commandBufferCount = 1;
-    submit_info.pCommandBuffers = &pImpl->command_buffers[pImpl->current_frame];
-    VkSemaphore signal_semaphores[] = {pImpl->render_finished_semaphores[pImpl->current_frame]};
-    submit_info.signalSemaphoreCount = 1;
-    submit_info.pSignalSemaphores = signal_semaphores;
+    // VkSemaphore wait_semaphores[] = {image_available_semaphores_[current_frame_]};
+    // VkPipelineStageFlags wait_stages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    // submit_info.waitSemaphoreCount = 1;
+    // submit_info.pWaitSemaphores = wait_semaphores;
+    // submit_info.pWaitDstStageMask = wait_stages;
+    // submit_info.commandBufferCount = 1;
+    // submit_info.pCommandBuffers = &command_buffers_[current_frame_];
+    // VkSemaphore signal_semaphores[] = {render_finished_semaphores_[current_frame_]};
+    // submit_info.signalSemaphoreCount = 1;
+    // submit_info.pSignalSemaphores = signal_semaphores;
 
-    vkQueueSubmit(pImpl->graphics_queue, 1, &submit_info, pImpl->in_flight_fences[pImpl->current_frame]);
+    // vkQueueSubmit(graphics_queue_, 1, &submit_info, in_flight_fences_[current_frame_]);
 }
 
 void VulkanRenderer::onPresent() {
     VkPresentInfoKHR present_info{};
     present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     present_info.waitSemaphoreCount = 1;
-    present_info.pWaitSemaphores = &pImpl->render_finished_semaphores[pImpl->current_frame];
+    present_info.pWaitSemaphores = &render_finished_semaphores_[current_frame_];
     present_info.swapchainCount = 1;
-    present_info.pSwapchains = &pImpl->swapchain;
-    // present_info.pImageIndices = &image_index;
+    present_info.pSwapchains = &swapchain_;
+    // present_info.pImageIndices = &image_index_;
 
-    vkQueuePresentKHR(pImpl->present_queue, &present_info);
+    // vkQueuePresentKHR(present_queue_, &present_info);
 
-    pImpl->current_frame = (pImpl->current_frame + 1) % pImpl->max_frames_in_flight;
+    current_frame_ = (current_frame_ + 1) % config_.maxFramesInFlight;
 }
 
 void VulkanRenderer::onResize(uint32_t width, uint32_t height) {
     // Recreate swapchain
+    swapchain_extent_ = {width, height};
 }
 
 void VulkanRenderer::onWaitIdle() {
-    if (pImpl->device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(pImpl->device);
+    if (device_ != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device_);
     }
 }
 
@@ -353,18 +295,18 @@ RendererBackend VulkanRenderer::getBackendImpl() const {
 }
 
 std::string VulkanRenderer::getGpuRendererStringImpl() const {
-    if (pImpl->physical_device != VK_NULL_HANDLE) {
+    if (physical_device_ != VK_NULL_HANDLE) {
         VkPhysicalDeviceProperties props;
-        vkGetPhysicalDeviceProperties(pImpl->physical_device, &props);
+        vkGetPhysicalDeviceProperties(physical_device_, &props);
         return props.deviceName;
     }
     return "Unknown Vulkan Device";
 }
 
 std::string VulkanRenderer::getGpuVendorStringImpl() const {
-    if (pImpl->physical_device != VK_NULL_HANDLE) {
+    if (physical_device_ != VK_NULL_HANDLE) {
         VkPhysicalDeviceProperties props;
-        vkGetPhysicalDeviceProperties(pImpl->physical_device, &props);
+        vkGetPhysicalDeviceProperties(physical_device_, &props);
         switch (props.vendorID) {
             case 0x13B5: return "ARM"; // Mali
             case 0x5143: return "Qualcomm"; // Adreno
@@ -376,14 +318,63 @@ std::string VulkanRenderer::getGpuVendorStringImpl() const {
 }
 
 std::string VulkanRenderer::getGpuVersionStringImpl() const {
-    if (pImpl->physical_device != VK_NULL_HANDLE) {
+    if (physical_device_ != VK_NULL_HANDLE) {
         VkPhysicalDeviceProperties props;
-        vkGetPhysicalDeviceProperties(pImpl->physical_device, &props);
+        vkGetPhysicalDeviceProperties(physical_device_, &props);
         return std::to_string(VK_VERSION_MAJOR(props.apiVersion)) + "." +
                std::to_string(VK_VERSION_MINOR(props.apiVersion)) + "." +
                std::to_string(VK_VERSION_PATCH(props.apiVersion));
     }
     return "Unknown";
+}
+
+void VulkanRenderer::query_gpu_info() {
+    if (physical_device_ != VK_NULL_HANDLE) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(physical_device_, &props);
+        gpu_info_.renderer_string = props.deviceName;
+        gpu_info_.api_version = props.apiVersion;
+        gpu_info_.driver_version = props.driverVersion;
+        gpu_info_.device_id = props.deviceID;
+        
+        switch (props.vendorID) {
+            case 0x13B5: gpu_info_.vendor = GPUVendor::ARM; break;
+            case 0x5143: gpu_info_.vendor = GPUVendor::Qualcomm; break;
+            case 0x1010: gpu_info_.vendor = GPUVendor::Imagination; break;
+            default: gpu_info_.vendor = GPUVendor::Unknown; break;
+        }
+    }
+}
+
+void VulkanRenderer::query_limits() {
+    if (physical_device_ != VK_NULL_HANDLE) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(physical_device_, &props);
+        
+        limits_.max_push_constants_size = props.limits.maxPushConstantsSize;
+        limits_.max_sampler_anisotropy = static_cast<uint32_t>(props.limits.maxSamplerAnisotropy);
+        limits_.max_viewport_dimensions[0] = props.limits.maxViewportDimensions[0];
+        limits_.max_viewport_dimensions[1] = props.limits.maxViewportDimensions[1];
+        limits_.max_framebuffer_width = props.limits.maxFramebufferWidth;
+        limits_.max_framebuffer_height = props.limits.maxFramebufferHeight;
+        limits_.max_framebuffer_layers = props.limits.maxFramebufferLayers;
+        limits_.max_framebuffer_samples = static_cast<uint32_t>(props.limits.maxFramebufferSamples);
+        limits_.max_color_attachments = props.limits.maxColorAttachments;
+    }
+}
+
+void VulkanRenderer::apply_driver_workarounds() {
+    // Apply GPU-specific workarounds based on gpu_info_.vendor and gpu_info_.architecture
+    GPUCapabilities capabilities;
+    capabilities.applyWorkarounds(config_);
+}
+
+bool VulkanRenderer::isInitialized() const {
+    return initialized_;
+}
+
+void VulkanRenderer::reduceQuality() {
+    // Reduce rendering quality for thermal throttling
 }
 
 } // namespace copper
