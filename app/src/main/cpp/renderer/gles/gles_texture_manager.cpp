@@ -1,5 +1,7 @@
 #include "gles_texture_manager.h"
 
+#include "gles_missing_es31.h"
+
 #include "gles_renderer.h"
 
 #include <EGL/egl.h>
@@ -820,9 +822,18 @@ void GLESCTextureManager::copyLayerOnCpu(const TextureObject& src, const Texture
     glBindTexture(read_target, src.texture);
     // glGetTexImage needs an explicit extent and border; the scratch buffer was
     // sized for exactly this level, and a non-zero border would read past it.
-    glGetTexImage(read_target, static_cast<GLint>(src_mip), glDataFormat(src.internal_format),
-                  glDataType(src.internal_format), static_cast<GLsizei>(width),
-                  static_cast<GLsizei>(height), 0, scratch.data());
+    // It is resolved through eglGetProcAddress because the headers this build
+    // uses do not declare it, even though every libGLESv3.so exports it.
+    PFNCO_GLES_GETTEXIMAGE read_back = copper::gles::getTexImage();
+    if (read_back == nullptr) {
+        LOGW("glGetTexImage is unreachable; the CPU layer copy is skipped");
+        glBindTexture(read_target, previous);
+        glPixelStorei(GL_PACK_ALIGNMENT, previous_pack);
+        return;
+    }
+    read_back(read_target, static_cast<GLint>(src_mip), glDataFormat(src.internal_format),
+              glDataType(src.internal_format), static_cast<GLsizei>(width),
+              static_cast<GLsizei>(height), 0, scratch.data());
     glBindTexture(read_target, previous);
     glPixelStorei(GL_PACK_ALIGNMENT, previous_pack);
 
@@ -873,20 +884,16 @@ void GLESCTextureManager::onCopyTexture(uint64_t src, uint64_t dst, uint32_t src
     // is explicit.
     const bool plain_level = source.target == destination.target &&
                              (source.target == GL_TEXTURE_2D || both_3d);
-    // The overload the NDK header declares takes 15 arguments: it carries the
-    // source and destination formats and types explicitly, because a copy can
-    // reinterpret the data (for example UNPACK_ROW_LENGTH-style layout). The
-    // formats must match, which the identical-format check above already
-    // established, so both sides are given the same values.
-    if (plain_level && src_layer == dst_layer && glesAtLeast(3, 1) &&
-        source.internal_format == destination.internal_format) {
-        glCopyImageSubData(source.texture, static_cast<GLenum>(src_mip), 0, 0, 0,
-                           static_cast<GLenum>(source.internal_format),
-                           static_cast<GLenum>(glDataType(source.internal_format)),
-                           destination.texture, static_cast<GLenum>(dst_mip), 0, 0, 0,
-                           static_cast<GLenum>(destination.internal_format),
-                           static_cast<GLenum>(glDataType(destination.internal_format)),
-                           static_cast<GLsizei>(width), static_cast<GLsizei>(height),
+    // The NDK header's form takes the source and destination targets as well as
+    // the extents, which is what allows the copy to span different texture
+    // objects with different bindings. Copper Oxide always copies between two
+    // levels it just verified are the same internal format, so the formats are
+    // not part of the call.
+    if (plain_level && src_layer == dst_layer && glesAtLeast(3, 1)) {
+        glCopyImageSubData(source.texture, static_cast<GLenum>(source.target),
+                           static_cast<GLint>(src_mip), 0, 0, 0, destination.texture,
+                           static_cast<GLenum>(destination.target), static_cast<GLint>(dst_mip), 0,
+                           0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height),
                            static_cast<GLsizei>(depth));
         return;
     }

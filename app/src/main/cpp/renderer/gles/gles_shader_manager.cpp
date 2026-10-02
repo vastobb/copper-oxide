@@ -1,5 +1,7 @@
 #include "gles_shader_manager.h"
 
+#include "gles_missing_es31.h"
+
 #include "renderer_base.h"
 #include "renderer_config.h"
 

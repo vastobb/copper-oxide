@@ -1,5 +1,7 @@
 #include "gles_buffer_manager.h"
 
+#include "gles_missing_es31.h"
+
 #include "gles_renderer.h"
 
 #include <EGL/egl.h>
@@ -383,8 +385,14 @@ void GLESBufferManager::onInvalidateBuffer(uint64_t handle, uint64_t offset, uin
 
     const GLuint previous = boundBuffer(object.target);
     glBindBuffer(object.target, object.buffer);
-    glGetBufferSubData(object.target, static_cast<GLintptr>(offset), static_cast<GLsizeiptr>(size),
-                       window);
+    // Resolved through eglGetProcAddress: see gles_missing_es31.h.
+    PFNCO_GLES_GETBUFFERSUBDATA read_back = copper::gles::getBufferSubData();
+    if (read_back == nullptr) {
+        LOGW("glGetBufferSubData is unreachable; invalidateBuffer has no effect");
+        glBindBuffer(object.target, previous);
+        return;
+    }
+    read_back(object.target, static_cast<GLintptr>(offset), static_cast<GLsizeiptr>(size), window);
     glBindBuffer(object.target, previous);
 }
 
