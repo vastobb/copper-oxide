@@ -120,7 +120,7 @@ uint64_t ResourcePool::allocateTexture(uint32_t width, uint32_t height, uint32_t
     pImpl->stats.pool_misses++;
 
     uint64_t handle = pImpl->next_handle++;
-    PooledResource resource;
+    Impl::PooledResource resource;
     resource.handle = handle;
     resource.type = ResourceType::Texture;
     resource.size = size;
