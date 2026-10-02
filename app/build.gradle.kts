@@ -44,7 +44,6 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
-        freeCompilerArgs.addAll(listOf("-Xopt-in=kotlin.RequiresOptIn", "-Xjvm-default=all"))
     }
 
     packagingOptions {
