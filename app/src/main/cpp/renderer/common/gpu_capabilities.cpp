@@ -226,7 +226,7 @@ void GPUCapabilities::queryVulkanProperties() {
             // Android's libvulkan does not export Vulkan 1.1+ entry points, so the
             // function is resolved dynamically at runtime.
             auto get_features2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
-                vkGetInstanceProcAddr(instance_, "vkGetPhysicalDeviceFeatures2"));
+                vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2"));
             if (get_features2) {
                 get_features2(device, &features2);
             } else {
