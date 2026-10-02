@@ -148,15 +148,35 @@ jobs:
 
       - name: Verify library
         run: |
-          ls -la app/src/main/jniLibs/arm64-v8a/libcopper-oxide.so
-          file app/src/main/jniLibs/arm64-v8a/libcopper-oxide.so
+          set -euo pipefail
+          # The Android Gradle Plugin owns the output location for an
+          # externalNativeBuild, so the library is located rather than assumed.
+          # Hard-coding a path here is what let the library ship in the APK for
+          # the first time while this step still passed.
+          mapfile -t libs < <(find app/build -name 'libcopper-oxide.so' -type f | sort)
+          if [ "${#libs[@]}" -eq 0 ]; then
+            echo "::error::libcopper-oxide.so was not produced by the native build"
+            exit 1
+          fi
+          printf 'found %s native librar(y/ies):\n' "${#libs[@]}"
+          printf '  %s\n' "${libs[@]}"
+          file "${libs[@]}"
+          # A library with no exported JNI_OnLoad would load but fail every call.
+          for lib in "${libs[@]}"; do
+            if ! readelf -a "$lib" 2>/dev/null | grep -q 'JNI_OnLoad'; then
+              echo "::error::$lib exports no JNI_OnLoad"
+              exit 1
+            fi
+          done
 
       - name: Upload native library
         uses: actions/upload-artifact@v4
         with:
-          name: native-lib-arm64
-          path: app/src/main/jniLibs/arm64-v8a/libcopper-oxide.so
+          name: native-lib
+          path: |
+            app/build/**/libcopper-oxide.so
           retention-days: 7
+          if-no-files-found: error
 
   # Android build
   android-build:
@@ -205,14 +225,41 @@ jobs:
 
       - name: Verify APK
         run: |
-          APK_PATH=$(find app/build/outputs/apk -name "*.apk" | head -1)
+          set -euo pipefail
+          APK_PATH=$(find app/build/outputs/apk -name "*.apk" ! -path '*androidTest*' | head -1)
           echo "APK: $APK_PATH"
           ls -la "$APK_PATH"
           unzip -l "$APK_PATH" | head -30
+          # The library actually being inside the APK is the only check that
+          # proves System.loadLibrary will work. Listing the archive is not
+          # enough: this exact class of bug shipped every APK without the .so.
+          if ! unzip -l "$APK_PATH" | grep -q 'lib/arm64-v8a/libcopper-oxide.so'; then
+            echo "::error::$APK_PATH does not contain lib/arm64-v8a/libcopper-oxide.so"
+            exit 1
+          fi
+          unzip -l "$APK_PATH" | grep 'libcopper-oxide.so'
+          if [ "${{ matrix.build_type }}" = "debug" ]; then
+            if ! unzip -l "$APK_PATH" | grep -q 'lib/x86_64/libcopper-oxide.so'; then
+              echo "::error::the debug APK must carry x86_64 too, or CI emulators cannot load it"
+              exit 1
+            fi
+          fi
 
       - name: Build androidTest APK
         if: matrix.build_type == 'debug'
         run: ./gradlew assembleDebugAndroidTest --no-daemon --stacktrace
+
+      - name: Verify androidTest APK links against the same library
+        if: matrix.build_type == 'debug'
+        run: |
+          set -euo pipefail
+          TEST_APK=$(find app/build/outputs/apk/androidTest -name "*.apk" | head -1)
+          echo "androidTest APK: $TEST_APK"
+          unzip -l "$TEST_APK" | grep 'libcopper-oxide.so'
+          if ! unzip -l "$TEST_APK" | grep -q 'lib/x86_64/libcopper-oxide.so'; then
+            echo "::error::the androidTest APK does not carry the x86_64 native library"
+            exit 1
+          fi
 
       - name: Upload androidTest APK
         if: matrix.build_type == 'debug'
@@ -317,7 +364,19 @@ jobs:
           script: |
             adb install -r -t app/build/outputs/apk/androidTest/debug/*.apk
             adb install -r -t app/build/outputs/apk/debug/*.apk
-            adb shell am instrument -w com.oxide.mc.copperoxide.test/androidx.test.runner.AndroidJUnitRunner
+            adb shell am instrument -w com.oxide.mc.copperoxide.test/androidx.test.runner.AndroidJUnitRunner | tee instrumented-tests.log
+            # `am instrument` reports failures in its output but still exits 0, so
+            # a green job meant nothing. Fail on the two markers that actually
+            # distinguish a run: JUnit prints FAILURES!!! or "OK (n tests)".
+            if grep -q 'FAILURES!!!' instrumented-tests.log; then
+              echo "::error::instrumented tests reported failures"
+              exit 1
+            fi
+            if ! grep -qE '^OK \([0-9]+ tests?\)' instrumented-tests.log; then
+              echo "::error::instrumented tests did not report a successful run"
+              exit 1
+            fi
+            grep -E 'Tests run:|OK \(' instrumented-tests.log || true
 
       - name: Upload test results
         if: always()
@@ -431,8 +490,8 @@ jobs:
             ${{ steps.changelog.outputs.CHANGELOG }}
 
             ## Downloads
-            - **APK**: \`copper-oxide-${{ steps.version.outputs.VERSION }}-arm64-v8a.apk\`
-            - **AAB**: \`copper-oxide-${{ steps.version.outputs.VERSION }}-arm64-v8a.aab\`
+            - **APK**: \`copper-oxide-${{ steps.version.outputs.VERSION }}-release.apk\`
+            - **AAB**: \`copper-oxide-${{ steps.version.outputs.VERSION }}-release.aab\`
 
             ## Installation
             1. Download the APK for your architecture (ARM64)
