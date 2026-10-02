@@ -1,6 +1,16 @@
 #pragma once
 
 #include "renderer_base.h"
+#include "buffer_manager.h"
+#include "texture_manager.h"
+#include "shader_manager.h"
+#include "framebuffer_manager.h"
+#include "state_manager.h"
+#include "command_buffer.h"
+#include "sync_manager.h"
+#include "resource_pool.h"
+#include "profiler.h"
+
 #include <vulkan/vulkan.h>
 #include <vector>
 #include <unordered_map>
@@ -43,8 +53,8 @@ public:
     double getCpuTimeMs() const override { return frame_stats_.cpu_time_ms; }
     double getGpuTimeMs() const override { return frame_stats_.gpu_time_ms; }
     uint32_t getDrawCalls() const override { return frame_stats_.draw_calls; }
-    uint64_t getGpuMemoryUsed() const override { return frame_stats_.gpu_memory; }
-    uint64_t getCpuMemoryUsed() const override { return frame_stats_.cpu_memory; }
+    uint64_t getGpuMemoryUsed() const override { return frame_stats_.gpu_memory_used; }
+    uint64_t getCpuMemoryUsed() const override { return frame_stats_.cpu_memory_used; }
 
     std::string getGpuRendererString() const override { return gpu_info_.renderer_string; }
     std::string getGpuVendorString() const override { return gpu_info_.vendor_string; }
@@ -105,15 +115,15 @@ private:
     VkDebugUtilsMessengerEXT debug_messenger_ = VK_NULL_HANDLE;
 
     // Managers
-    std::unique_ptr<class VulkanBufferManager> buffer_manager_;
-    std::unique_ptr<class VulkanTextureManager> texture_manager_;
-    std::unique_ptr<class VulkanShaderManager> shader_manager_;
-    std::unique_ptr<class VulkanFramebufferManager> framebuffer_manager_;
-    std::unique_ptr<class VulkanStateManager> state_manager_;
-    std::unique_ptr<class VulkanCommandBuffer> command_buffer_;
-    std::unique_ptr<class VulkanSyncManager> sync_manager_;
-    std::unique_ptr<class VulkanResourcePool> resource_pool_;
-    std::unique_ptr<class VulkanProfiler> profiler_;
+    std::unique_ptr<BufferManager> buffer_manager_;
+    std::unique_ptr<TextureManager> texture_manager_;
+    std::unique_ptr<ShaderManager> shader_manager_;
+    std::unique_ptr<FramebufferManager> framebuffer_manager_;
+    std::unique_ptr<StateManager> state_manager_;
+    std::unique_ptr<CommandBuffer> command_buffer_;
+    std::unique_ptr<SyncManager> sync_manager_;
+    std::unique_ptr<ResourcePool> resource_pool_;
+    std::unique_ptr<Profiler> profiler_;
 
     // Config & state
     RendererConfig config_;
