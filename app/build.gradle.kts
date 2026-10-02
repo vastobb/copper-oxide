@@ -24,10 +24,17 @@ android {
             cmake {
                 cppFlags += listOf("-std=c++20", "-fexceptions", "-frtti", "-Wall", "-Wextra", "-O3")
                 arguments += listOf("-DANDROID_STL=c++_shared", "-DCMAKE_CXX_STANDARD=20", "-DCMAKE_CXX_STANDARD_REQUIRED=ON")
-                abiFilters += listOf("arm64-v8a")
+                // No abiFilters here on purpose. The AGP docs have this on the
+                // cmake block, but it constrains the NATIVE BUILD while
+                // ndk.abiFilters constrains PACKAGING, and setting only the
+                // former is what left the debug APK with arm64 only - so the CI
+                // emulator had no library to load. The ABI set is declared once,
+                // on ndk.abiFilters below plus the debug build type.
             }
         }
 
+        // Release ships arm64 only, which is every Android device Copper Oxide
+        // targets. The debug build type adds x86_64 below for CI emulators.
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
