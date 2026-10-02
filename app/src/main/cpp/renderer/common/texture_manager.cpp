@@ -178,7 +178,10 @@ bool TextureManager::updateTexture(uint64_t handle, uint32_t mip_level, uint32_t
         if (it == pImpl->textures.end()) {
             return false;
         }
-        const Texture& texture = it->second;
+        // Impl::Texture, not TextureManager::Texture: the two are different
+        // records and the unqualified name resolves to the public one, which is
+        // not what the map holds.
+        const Impl::Texture& texture = it->second;
         if (mip_level >= texture.mip_levels) {
             return false;
         }
