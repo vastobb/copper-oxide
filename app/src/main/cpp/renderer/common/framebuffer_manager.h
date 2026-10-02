@@ -22,7 +22,7 @@ public:
     };
 
     FramebufferManager();
-    ~FramebufferManager();
+    virtual ~FramebufferManager();
 
     FramebufferManager(const FramebufferManager&) = delete;
     FramebufferManager& operator=(const FramebufferManager&) = delete;

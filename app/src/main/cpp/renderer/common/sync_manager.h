@@ -11,7 +11,7 @@ class RendererBase;
 class SyncManager {
 public:
     SyncManager();
-    ~SyncManager();
+    virtual ~SyncManager();
 
     SyncManager(const SyncManager&) = delete;
     SyncManager& operator=(const SyncManager&) = delete;

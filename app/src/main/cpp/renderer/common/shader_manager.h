@@ -52,7 +52,7 @@ public:
     };
 
     ShaderManager();
-    ~ShaderManager();
+    virtual ~ShaderManager();
 
     ShaderManager(const ShaderManager&) = delete;
     ShaderManager& operator=(const ShaderManager&) = delete;

@@ -21,7 +21,7 @@ public:
     };
 
     BufferManager();
-    ~BufferManager();
+    virtual ~BufferManager();
 
     // Non-copyable, movable
     BufferManager(const BufferManager&) = delete;

@@ -12,7 +12,7 @@ class RendererBase;
 class CommandBuffer {
 public:
     CommandBuffer();
-    ~CommandBuffer();
+    virtual ~CommandBuffer();
 
     CommandBuffer(const CommandBuffer&) = delete;
     CommandBuffer& operator=(const CommandBuffer&) = delete;

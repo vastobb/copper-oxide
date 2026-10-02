@@ -38,7 +38,7 @@ public:
     };
 
     Profiler();
-    ~Profiler();
+    virtual ~Profiler();
 
     Profiler(const Profiler&) = delete;
     Profiler& operator=(const Profiler&) = delete;

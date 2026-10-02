@@ -32,7 +32,7 @@ public:
     };
 
     ResourcePool();
-    ~ResourcePool();
+    virtual ~ResourcePool();
 
     ResourcePool(const ResourcePool&) = delete;
     ResourcePool& operator=(const ResourcePool&) = delete;

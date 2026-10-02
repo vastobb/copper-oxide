@@ -24,7 +24,7 @@ public:
     };
 
     TextureManager();
-    ~TextureManager();
+    virtual ~TextureManager();
 
     TextureManager(const TextureManager&) = delete;
     TextureManager& operator=(const TextureManager&) = delete;

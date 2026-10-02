@@ -12,7 +12,7 @@ class RendererBase;
 class StateManager {
 public:
     StateManager();
-    ~StateManager();
+    virtual ~StateManager();
 
     StateManager(const StateManager&) = delete;
     StateManager& operator=(const StateManager&) = delete;
