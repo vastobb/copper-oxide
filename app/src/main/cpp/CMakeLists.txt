@@ -57,39 +57,15 @@ add_library(copper-oxide SHARED
 
     # Vulkan backend
     renderer/vulkan/vulkan_renderer.cpp
-    renderer/vulkan/vulkan_device.cpp
-    renderer/vulkan/vulkan_swapchain.cpp
-    renderer/vulkan/vulkan_pipeline.cpp
-    renderer/vulkan/vulkan_descriptor.cpp
-    renderer/vulkan/vulkan_command_buffer.cpp
-    renderer/vulkan/vulkan_sync.cpp
-    renderer/vulkan/vulkan_memory.cpp
-    renderer/vulkan/vulkan_shader.cpp
-    renderer/vulkan/vulkan_buffer.cpp
-    renderer/vulkan/vulkan_texture.cpp
-    renderer/vulkan/vulkan_framebuffer.cpp
-    renderer/vulkan/vulkan_state.cpp
 
     # OpenGL ES backend
     renderer/gles/gles_renderer.cpp
-    renderer/gles/gles_device.cpp
-    renderer/gles/gles_shader.cpp
-    renderer/gles/gles_buffer.cpp
-    renderer/gles/gles_texture.cpp
-    renderer/gles/gles_framebuffer.cpp
-    renderer/gles/gles_state.cpp
 
     # Platform integration
     platform/android/android_platform.cpp
-    platform/android/android_surface.cpp
-    platform/android/android_egl.cpp
-    platform/android/android_vulkan_surface.cpp
 
     # JNI Bridge
     jni/jni_bridge.cpp
-    jni/renderer_jni.cpp
-    jni/config_jni.cpp
-    jni/diagnostics_jni.cpp
 )
 
 target_link_libraries(copper-oxide
