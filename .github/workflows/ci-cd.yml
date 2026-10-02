@@ -253,15 +253,24 @@ jobs:
         if: matrix.build_type == 'debug'
         run: ./gradlew assembleDebugAndroidTest --no-daemon --stacktrace
 
-      - name: Verify androidTest APK links against the same library
+      - name: Verify androidTest APK
         if: matrix.build_type == 'debug'
         run: |
           set -euo pipefail
           TEST_APK=$(find app/build/outputs/apk/androidTest -name "*.apk" | head -1)
+          if [ -z "$TEST_APK" ]; then
+            echo "::error::no androidTest APK was produced"
+            exit 1
+          fi
           echo "androidTest APK: $TEST_APK"
-          unzip -l "$TEST_APK" | grep 'libcopper-oxide.so'
-          if ! unzip -l "$TEST_APK" | grep -q 'lib/x86_64/libcopper-oxide.so'; then
-            echo "::error::the androidTest APK does not carry the x86_64 native library"
+          ls -la "$TEST_APK"
+          # An instrumentation APK deliberately carries no native libraries: the
+          # library under test lives in the app APK, which was checked above. So
+          # this verifies that the test code itself is present, which is what an
+          # empty or stale classes.dex would break.
+          unzip -l "$TEST_APK" | grep -E 'classes.dex|AndroidManifest.xml'
+          if ! unzip -l "$TEST_APK" | grep -q 'classes.dex'; then
+            echo "::error::the androidTest APK has no classes.dex; the tests are not packaged"
             exit 1
           fi
 
