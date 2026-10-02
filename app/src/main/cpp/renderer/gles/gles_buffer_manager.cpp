@@ -1,7 +1,5 @@
 #include "gles_buffer_manager.h"
 
-#include "gles_es31_compat.h"
-
 #include "gles_renderer.h"
 
 #include <EGL/egl.h>
@@ -385,13 +383,8 @@ void GLESBufferManager::onInvalidateBuffer(uint64_t handle, uint64_t offset, uin
 
     const GLuint previous = boundBuffer(object.target);
     glBindBuffer(object.target, object.buffer);
-    PFNGLGETBUFFERSUBDATAPROC read_back = copper::gles::getBufferSubData();
-    if (read_back == nullptr) {
-        LOGW("glGetBufferSubData is unavailable on this ES context; invalidateBuffer has no effect");
-        glBindBuffer(object.target, previous);
-        return;
-    }
-    read_back(object.target, static_cast<GLintptr>(offset), static_cast<GLsizeiptr>(size), window);
+    glGetBufferSubData(object.target, static_cast<GLintptr>(offset), static_cast<GLsizeiptr>(size),
+                       window);
     glBindBuffer(object.target, previous);
 }
 
@@ -456,18 +449,9 @@ void GLESBufferManager::onCopyBuffer(uint64_t src, uint64_t dst, uint64_t size, 
         const GLuint previous_write = boundBuffer(GL_COPY_WRITE_BUFFER);
         glBindBuffer(GL_COPY_READ_BUFFER, src_it->second.buffer);
         glBindBuffer(GL_COPY_WRITE_BUFFER, dst_it->second.buffer);
-        PFNGLCOPYBUFFERSUBDATAPROC device_copy = copper::gles::copyBufferSubData();
-        if (device_copy == nullptr) {
-            // The extension string claimed ES 3.1 but the entry point is not
-            // reachable; fall through to the CPU path rather than dropping.
-            glBindBuffer(GL_COPY_READ_BUFFER, previous_read);
-            glBindBuffer(GL_COPY_WRITE_BUFFER, previous_write);
-            copyThroughHostMemory(src, dst, size, src_offset, dst_offset);
-            return;
-        }
-        device_copy(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER,
-                    static_cast<GLintptr>(src_offset), static_cast<GLintptr>(dst_offset),
-                    static_cast<GLsizeiptr>(size));
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER,
+                            static_cast<GLintptr>(src_offset), static_cast<GLintptr>(dst_offset),
+                            static_cast<GLsizeiptr>(size));
         glBindBuffer(GL_COPY_READ_BUFFER, previous_read);
         glBindBuffer(GL_COPY_WRITE_BUFFER, previous_write);
         return;

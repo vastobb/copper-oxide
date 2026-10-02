@@ -292,11 +292,16 @@ bool GLESShaderManager::onCreateShader(uint64_t handle, ShaderStage stage,
         return false;
     }
 
-    // glShaderBinary() has no format parameter: GL_SHADER_BINARY_FORMAT_SPIR_V
-    // (0x9551) is fixed by GL_OES_gl_spirv / GL_ARB_gl_spirv for the binary
-    // format accepted by this entry point.
-    glShaderBinary(gl_shader, 1, spirv.data(),
+    // glShaderBinary takes a batch: count, then the shaders, then the binary
+    // format. GL_SHADER_BINARY_FORMAT_SPIR_V (0x9551) is the format
+    // GL_OES_gl_spirv / GL_ARB_gl_spirv define for this entry point.
+    const GLuint shaders[1] = {gl_shader};
+    glShaderBinary(1, shaders, GL_SHADER_BINARY_FORMAT_SPIR_V, spirv.data(),
                    static_cast<GLsizei>(spirv.size() * sizeof(uint32_t)));
+    // A failed specialise leaves GL_INVALID_OPERATION set, which is the only
+    // signal available here; clear it so the caller's glGetError check sees only
+    // errors from the specialise itself.
+    (void)glGetError();
     specialize(gl_shader, entry_point.c_str(), 0, nullptr);
 
     GLint compiled = GL_FALSE;

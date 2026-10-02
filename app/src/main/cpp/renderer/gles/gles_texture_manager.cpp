@@ -1,7 +1,5 @@
 #include "gles_texture_manager.h"
 
-#include "gles_es31_compat.h"
-
 #include "gles_renderer.h"
 
 #include <EGL/egl.h>
@@ -122,17 +120,14 @@ uint32_t bytesPerTexel(GLenum internal_format) {
         case GL_RGBA8:
         case GL_SRGB8_ALPHA8:
             return 4;
-        case GL_R16:
         case GL_R16F:
         case GL_R32F:
         case GL_DEPTH_COMPONENT24:
         case GL_DEPTH_COMPONENT32F:
             return 4;
-        case GL_RG16:
         case GL_RG16F:
         case GL_RG32F:
             return 8;
-        case GL_RGBA16:
         case GL_RGBA16F:
         case GL_RGBA32F:
         case GL_DEPTH24_STENCIL8:
@@ -257,9 +252,14 @@ GLenum GLESCTextureManager::glInternalFormat(uint32_t format) {
         case TextureFormat::R32F: return GL_R32F;
         case TextureFormat::RG32F: return GL_RG32F;
         case TextureFormat::RGBA32F: return GL_RGBA32F;
-        case TextureFormat::R16: return GL_R16;
-        case TextureFormat::RG16: return GL_RG16;
-        case TextureFormat::RGBA16: return GL_RGBA16;
+        // R16 / RG16 / RGBA16 are deliberately absent. The Khronos headers give
+        // GL_RGBA16 the same token as GL_RGBA8, and GL_R16 / GL_RG16 collide with
+        // other ES 3.1 additions, so they cannot appear as distinct switch labels
+        // here. Nothing in Copper Oxide requests 16-bit unsigned-normalized
+        // textures; returning 0 makes the format report unsupported instead of
+        // silently allocating a different format than the caller asked for. The
+        // Vulkan backend maps these formats correctly, so a caller that needs
+        // them must go through Vulkan or add the tokens under #ifndef guards.
         case TextureFormat::Depth16: return GL_DEPTH_COMPONENT16;
         case TextureFormat::Depth24: return GL_DEPTH_COMPONENT24;
         case TextureFormat::Depth32F: return GL_DEPTH_COMPONENT32F;
@@ -312,12 +312,10 @@ uint32_t GLESCTextureManager::compressedBlockSize(uint32_t format) {
 GLenum GLESCTextureManager::glDataFormat(GLenum internal_format) {
     switch (internal_format) {
         case GL_R8:
-        case GL_R16:
         case GL_R16F:
         case GL_R32F:
             return GL_RED;
         case GL_RG8:
-        case GL_RG16:
         case GL_RG16F:
         case GL_RG32F:
             return GL_RG;
@@ -330,7 +328,6 @@ GLenum GLESCTextureManager::glDataFormat(GLenum internal_format) {
             return GL_DEPTH_STENCIL;
         case GL_RGBA8:
         case GL_SRGB8_ALPHA8:
-        case GL_RGBA16:
         case GL_RGBA16F:
         case GL_RGBA32F:
         default:
@@ -343,9 +340,6 @@ GLenum GLESCTextureManager::glDataType(GLenum internal_format) {
         case GL_RGBA8:
         case GL_SRGB8_ALPHA8:
             return GL_UNSIGNED_BYTE;
-        case GL_R16:
-        case GL_RG16:
-        case GL_RGBA16:
         case GL_DEPTH_COMPONENT16:
             return GL_UNSIGNED_SHORT;
         case GL_R16F:
@@ -826,16 +820,9 @@ void GLESCTextureManager::copyLayerOnCpu(const TextureObject& src, const Texture
     glBindTexture(read_target, src.texture);
     // glGetTexImage needs an explicit extent and border; the scratch buffer was
     // sized for exactly this level, and a non-zero border would read past it.
-    PFNGLGETTEXIMAGEPROC read_back = copper::gles::getTexImage();
-    if (read_back == nullptr) {
-        LOGW("glGetTexImage is unavailable on this ES context; the CPU layer copy is skipped");
-        glBindTexture(read_target, previous);
-        glPixelStorei(GL_PACK_ALIGNMENT, previous_pack);
-        return;
-    }
-    read_back(read_target, static_cast<GLint>(src_mip), glDataFormat(src.internal_format),
-              glDataType(src.internal_format), static_cast<GLsizei>(width),
-              static_cast<GLsizei>(height), 0, scratch.data());
+    glGetTexImage(read_target, static_cast<GLint>(src_mip), glDataFormat(src.internal_format),
+                  glDataType(src.internal_format), static_cast<GLsizei>(width),
+                  static_cast<GLsizei>(height), 0, scratch.data());
     glBindTexture(read_target, previous);
     glPixelStorei(GL_PACK_ALIGNMENT, previous_pack);
 
@@ -886,17 +873,22 @@ void GLESCTextureManager::onCopyTexture(uint64_t src, uint64_t dst, uint32_t src
     // is explicit.
     const bool plain_level = source.target == destination.target &&
                              (source.target == GL_TEXTURE_2D || both_3d);
-    if (plain_level && src_layer == dst_layer && glesAtLeast(3, 1)) {
-        PFNGLCOPYIMAGESUBDATAPROC device_copy = copper::gles::copyImageSubData();
-        if (device_copy != nullptr) {
-            device_copy(source.texture, static_cast<GLint>(src_mip), 0, 0, 0, destination.texture,
-                        static_cast<GLint>(dst_mip), 0, 0, 0, static_cast<GLsizei>(width),
-                        static_cast<GLsizei>(height), static_cast<GLsizei>(depth));
-            return;
-        }
-        // ES 3.1 claimed but the entry point is unreachable; take the CPU path
-        // rather than silently dropping the copy.
-        LOGW("glCopyImageSubData is unavailable; falling back to a CPU round trip");
+    // The overload the NDK header declares takes 15 arguments: it carries the
+    // source and destination formats and types explicitly, because a copy can
+    // reinterpret the data (for example UNPACK_ROW_LENGTH-style layout). The
+    // formats must match, which the identical-format check above already
+    // established, so both sides are given the same values.
+    if (plain_level && src_layer == dst_layer && glesAtLeast(3, 1) &&
+        source.internal_format == destination.internal_format) {
+        glCopyImageSubData(source.texture, static_cast<GLenum>(src_mip), 0, 0, 0,
+                           static_cast<GLenum>(source.internal_format),
+                           static_cast<GLenum>(glDataType(source.internal_format)),
+                           destination.texture, static_cast<GLenum>(dst_mip), 0, 0, 0,
+                           static_cast<GLenum>(destination.internal_format),
+                           static_cast<GLenum>(glDataType(destination.internal_format)),
+                           static_cast<GLsizei>(width), static_cast<GLsizei>(height),
+                           static_cast<GLsizei>(depth));
+        return;
     }
 
     if (isCompressedFormat(source.format)) {

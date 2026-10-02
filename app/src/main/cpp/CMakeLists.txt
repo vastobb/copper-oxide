@@ -83,7 +83,6 @@ add_library(copper-oxide SHARED
     renderer/gles/gles_profiler.cpp
     renderer/gles/gles_command_buffer.cpp
     renderer/gles/gles_command_sink.cpp
-    renderer/gles/gles_es31_compat.cpp
 
     # Platform integration
     platform/android/android_platform.cpp
