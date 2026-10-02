@@ -3,6 +3,8 @@
 #include "gpu_capabilities.h"
 
 #include <vulkan/vulkan.h>
+#include <android/log.h>
+#include <android/native_window.h>
 #include <algorithm>
 #include <vector>
 #include <string>
@@ -58,6 +60,11 @@ bool load_device_ext(VkDevice device) {
            fp_vkAcquireNextImageKHR && fp_vkQueuePresentKHR && fp_vkDestroySwapchainKHR;
 }
 } // namespace
+
+#define LOG_TAG "CopperOxide-VK"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace copper {
 
@@ -572,8 +579,9 @@ bool VulkanRenderer::destroy_swapchain() {
     if (device_ == VK_NULL_HANDLE) {
         swapchain_image_views_.clear();
         swapchain_images_.clear();
+        swapchain_framebuffers_.clear();
         swapchain_ = VK_NULL_HANDLE;
-        return;
+        return true;
     }
     vkDeviceWaitIdle(device_);
     for (VkFramebuffer framebuffer : swapchain_framebuffers_) {
@@ -589,6 +597,7 @@ bool VulkanRenderer::destroy_swapchain() {
     }
     swapchain_ = VK_NULL_HANDLE;
     swapchain_images_.clear();
+    return true;
 }
 
 bool VulkanRenderer::recreate_swapchain() {

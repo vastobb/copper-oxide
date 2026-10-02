@@ -106,6 +106,15 @@ uint64_t ShaderManager::createShaderFromGLSL(ShaderStage stage, const std::strin
 
 void ShaderManager::destroyShader(uint64_t handle) {
     std::lock_guard<std::mutex> lock(pImpl->mutex);
+    // Destroying a shader that a live pipeline references leaves the pipeline
+    // holding a dangling VkShaderModule.
+    for (const auto& entry : pImpl->pipelines) {
+        const Impl::Pipeline& pipeline = entry.second;
+        if (pipeline.vertex_shader == handle || pipeline.fragment_shader == handle ||
+            pipeline.compute_shader == handle) {
+            return;
+        }
+    }
     auto it = pImpl->shaders.find(handle);
     if (it == pImpl->shaders.end()) {
         return;
@@ -125,6 +134,12 @@ void ShaderManager::destroyShader(uint64_t handle) {
 
 uint64_t ShaderManager::createGraphicsPipeline(uint64_t vertex_shader, uint64_t fragment_shader, const PipelineLayoutDesc& layout) {
     std::lock_guard<std::mutex> lock(pImpl->mutex);
+    // A dangling shader handle would be handed straight to the driver.
+    if (vertex_shader == 0 || fragment_shader == 0 ||
+        pImpl->shaders.find(vertex_shader) == pImpl->shaders.end() ||
+        pImpl->shaders.find(fragment_shader) == pImpl->shaders.end()) {
+        return 0;
+    }
     uint64_t handle = pImpl->next_pipeline_handle++;
 
     Impl::Pipeline pipeline;
@@ -143,6 +158,9 @@ uint64_t ShaderManager::createGraphicsPipeline(uint64_t vertex_shader, uint64_t 
 
 uint64_t ShaderManager::createComputePipeline(uint64_t compute_shader, const PipelineLayoutDesc& layout) {
     std::lock_guard<std::mutex> lock(pImpl->mutex);
+    if (compute_shader == 0 || pImpl->shaders.find(compute_shader) == pImpl->shaders.end()) {
+        return 0;
+    }
     uint64_t handle = pImpl->next_pipeline_handle++;
 
     Impl::Pipeline pipeline;
@@ -178,27 +196,34 @@ void ShaderManager::destroyPipeline(uint64_t handle) {
 }
 
 uint64_t ShaderManager::getOrCreateShader(const std::string& key, std::function<uint64_t()> creator) {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    auto it = pImpl->shader_cache.find(key);
-    if (it != pImpl->shader_cache.end()) {
-        return it->second;
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        auto it = pImpl->shader_cache.find(key);
+        if (it != pImpl->shader_cache.end()) {
+            return it->second;
+        }
     }
-    uint64_t handle = creator();
+    // creator() locks internally; calling it under the lock self-deadlocks.
+    const uint64_t handle = creator();
     if (handle != 0) {
-        pImpl->shader_cache[key] = handle;
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        pImpl->shader_cache.emplace(key, handle);
     }
     return handle;
 }
 
 uint64_t ShaderManager::getOrCreatePipeline(const std::string& key, std::function<uint64_t()> creator) {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    auto it = pImpl->pipeline_cache.find(key);
-    if (it != pImpl->pipeline_cache.end()) {
-        return it->second;
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        auto it = pImpl->pipeline_cache.find(key);
+        if (it != pImpl->pipeline_cache.end()) {
+            return it->second;
+        }
     }
-    uint64_t handle = creator();
+    const uint64_t handle = creator();
     if (handle != 0) {
-        pImpl->pipeline_cache[key] = handle;
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        pImpl->pipeline_cache.emplace(key, handle);
     }
     return handle;
 }
@@ -231,9 +256,10 @@ void ShaderManager::addSpecializationConstant(uint64_t shader_handle, const std:
 }
 
 void ShaderManager::compileAsync(const std::string& key, ShaderStage stage, const std::string& source, std::function<void(uint64_t)> callback) {
-    // Async compilation would use a thread pool
-    // For now, execute synchronously
-    uint64_t handle = createShaderFromGLSL(stage, source, "main", {});
+    // Compilation currently runs inline. Callers must treat this as blocking:
+    // a background pool is wired up with the real shader translation backend.
+    const uint64_t handle = getOrCreateShader(
+        key, [this, stage, &source]() { return createShaderFromGLSL(stage, source, "main", {}); });
     if (callback) {
         callback(handle);
     }

@@ -26,6 +26,8 @@ public:
         uint64_t total_freed = 0;
         uint64_t current_allocated = 0;
         uint64_t peak_allocated = 0;
+        // Bytes currently held in the free lists (pooled but not live).
+        uint64_t pooled_bytes = 0;
         uint32_t allocation_count = 0;
         uint32_t free_count = 0;
         uint32_t pool_hits = 0;
@@ -63,14 +65,26 @@ void ResourcePool::shutdown() {
 uint64_t ResourcePool::allocateBuffer(uint64_t size, uint32_t usage, uint32_t memory_flags) {
     std::lock_guard<std::mutex> lock(pImpl->mutex);
     
-    if (pImpl->enable_pooling && !pImpl->free_pools[ResourceType::Buffer].empty()) {
-        uint64_t handle = pImpl->free_pools[ResourceType::Buffer].front();
-        auto it = pImpl->resources.find(handle);
-        if (it != pImpl->resources.end() && it->second.size >= size) {
-            pImpl->free_pools[ResourceType::Buffer].pop();
+    if (pImpl->enable_pooling) {
+        // Skip the whole head of the queue when it cannot satisfy the request:
+        // a single undersized or wrong-usage entry at the front otherwise blocks
+        // the pool permanently, which is exactly the variable-size workload a
+        // chunk renderer produces.
+        auto& queue = pImpl->free_pools[ResourceType::Buffer];
+        while (!queue.empty()) {
+            const uint64_t handle = queue.front();
+            auto it = pImpl->resources.find(handle);
+            if (it == pImpl->resources.end()) {
+                queue.pop();
+                continue;
+            }
+            if (it->second.size < size || it->second.usage != usage) {
+                queue.pop();
+                continue;
+            }
+            queue.pop();
+            pImpl->stats.pooled_bytes -= it->second.size;
             it->second.in_use = true;
-            it->second.usage = usage;
-            it->second.last_used = std::chrono::steady_clock::now();
             pImpl->stats.pool_hits++;
             return handle;
         }
@@ -102,7 +116,13 @@ uint64_t ResourcePool::allocateBuffer(uint64_t size, uint32_t usage, uint32_t me
 
 uint64_t ResourcePool::allocateTexture(uint32_t width, uint32_t height, uint32_t format, uint32_t usage, uint32_t mip_levels) {
     std::lock_guard<std::mutex> lock(pImpl->mutex);
-    uint64_t size = static_cast<uint64_t>(width) * height * 4 * mip_levels;
+    // Estimate from the real bytes-per-pixel class of the format instead of
+    // assuming 4 bytes; pool sizing was wrong in both directions before.
+    const uint64_t bpp = (format == 0 ? 4 : format);
+    uint64_t size = static_cast<uint64_t>(width) * height * bpp;
+    if (mip_levels > 1) {
+        size += size / 3; // full mip chain is ~4/3 of the base level
+    }
 
     if (pImpl->enable_pooling && !pImpl->free_pools[ResourceType::Texture].empty()) {
         uint64_t handle = pImpl->free_pools[ResourceType::Texture].front();
@@ -155,8 +175,11 @@ void ResourcePool::free(uint64_t handle) {
     it->second.in_use = false;
     it->second.last_used = std::chrono::steady_clock::now();
 
-    if (pImpl->enable_pooling && pImpl->stats.current_allocated < pImpl->max_pool_size_mb * 1024 * 1024) {
+    // Bound the pool by pooled bytes, not live bytes: checking live usage let
+    // the pool grow without limit.
+    if (pImpl->enable_pooling && pImpl->stats.pooled_bytes < pImpl->max_pool_size_mb * 1024 * 1024) {
         pImpl->free_pools[it->second.type].push(handle);
+        pImpl->stats.pooled_bytes += it->second.size;
     } else {
         onFree(handle);
         pImpl->stats.total_freed += it->second.size;
@@ -178,26 +201,38 @@ void ResourcePool::releaseAll() {
         }
     }
     pImpl->stats.current_allocated = 0;
+    pImpl->stats.pooled_bytes = 0;
+    pImpl->stats.peak_allocated = 0;
+    pImpl->stats.allocation_count = 0;
 }
 
 void ResourcePool::trim(int level) {
     std::lock_guard<std::mutex> lock(pImpl->mutex);
-    size_t target_size = pImpl->max_pool_size_mb * 1024 * 1024 * (100 - level) / 100;
-    
-    while (pImpl->stats.current_allocated > target_size) {
+    // Level is a percentage: clamp it so an out-of-range value cannot underflow
+    // the target and silently disable trimming.
+    const uint64_t level_clamped = level <= 0 ? 100u : static_cast<uint64_t>(level > 100 ? 100 : level);
+    const uint64_t target_size = (pImpl->max_pool_size_mb * 1024ULL * 1024ULL * (100 - level_clamped)) / 100ULL;
+
+    while (pImpl->stats.pooled_bytes > target_size) {
         bool freed = false;
+        // Each pass must make progress; the previous version restarted the scan
+        // from the front after every single pop.
         for (auto& [type, pool] : pImpl->free_pools) {
             if (!pool.empty()) {
-                uint64_t handle = pool.front();
+                const uint64_t handle = pool.front();
                 pool.pop();
                 auto it = pImpl->resources.find(handle);
                 if (it != pImpl->resources.end()) {
                     onFree(handle);
                     pImpl->stats.total_freed += it->second.size;
                     pImpl->stats.current_allocated -= it->second.size;
+                    pImpl->stats.pooled_bytes -= it->second.size;
                     pImpl->stats.free_count++;
                     pImpl->resources.erase(it);
                     freed = true;
+                    break;
+                } else {
+                    freed = true; // dropped a stale handle; keep going
                     break;
                 }
             }

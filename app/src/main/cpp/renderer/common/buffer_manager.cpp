@@ -129,18 +129,32 @@ void BufferManager::invalidateBuffer(uint64_t handle, uint64_t offset, uint64_t 
 }
 
 void BufferManager::updateBuffer(uint64_t handle, uint64_t offset, const void* data, uint64_t size) {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    auto it = pImpl->buffers.find(handle);
-    if (it == pImpl->buffers.end()) {
-        return;
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        auto it = pImpl->buffers.find(handle);
+        if (it == pImpl->buffers.end()) {
+            return;
+        }
+        // Out-of-range writes become out-of-bounds memcpys in the backend.
+        if (offset > it->second.size || size > it->second.size - offset) {
+            return;
+        }
     }
     onUpdateBuffer(handle, offset, data, size);
 }
 
 void BufferManager::copyBuffer(uint64_t src, uint64_t dst, uint64_t size, uint64_t src_offset, uint64_t dst_offset) {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    if (pImpl->buffers.find(src) == pImpl->buffers.end() || pImpl->buffers.find(dst) == pImpl->buffers.end()) {
-        return;
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        const auto src_it = pImpl->buffers.find(src);
+        const auto dst_it = pImpl->buffers.find(dst);
+        if (src_it == pImpl->buffers.end() || dst_it == pImpl->buffers.end()) {
+            return;
+        }
+        if (src_offset > src_it->second.size || size > src_it->second.size - src_offset ||
+            dst_offset > dst_it->second.size || size > dst_it->second.size - dst_offset) {
+            return;
+        }
     }
     onCopyBuffer(src, dst, size, src_offset, dst_offset);
 }
@@ -175,16 +189,20 @@ void BufferManager::setBufferDebugName(uint64_t handle, const std::string& name)
 }
 
 uint64_t BufferManager::allocateFromPool(uint64_t size, uint32_t usage) {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    for (auto it = pImpl->pool_handles.begin(); it != pImpl->pool_handles.end(); ++it) {
-        auto buffer_it = pImpl->buffers.find(*it);
-        if (buffer_it != pImpl->buffers.end() && buffer_it->second.size >= size) {
-            uint64_t handle = *it;
-            pImpl->pool_handles.erase(it);
-            buffer_it->second.usage = usage;
-            return handle;
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        for (auto it = pImpl->pool_handles.begin(); it != pImpl->pool_handles.end(); ++it) {
+            auto buffer_it = pImpl->buffers.find(*it);
+            if (buffer_it != pImpl->buffers.end() && buffer_it->second.size >= size) {
+                uint64_t handle = *it;
+                pImpl->pool_handles.erase(it);
+                buffer_it->second.usage = usage;
+                return handle;
+            }
         }
     }
+    // createBuffer() takes the mutex itself: calling it under the lock would
+    // self-deadlock on a non-recursive mutex.
     return createBuffer(size, usage, 0);
 }
 

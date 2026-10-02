@@ -362,11 +362,11 @@ bool GLESCRenderer::query_gpu_info() {
 
 void GLESCRenderer::query_extensions() {
     gpu_info_.extensions.clear();
-    const char* extension_string = glGetString(GL_EXTENSIONS);
+    const GLubyte* extension_string = glGetString(GL_EXTENSIONS);
     if (!extension_string) {
         return;
     }
-    const std::string all(extension_string);
+    const std::string all(reinterpret_cast<const char*>(extension_string));
     size_t start = 0;
     while (start < all.size()) {
         const size_t end = all.find(' ', start);
@@ -384,11 +384,9 @@ void GLESCRenderer::query_extensions() {
 void GLESCRenderer::query_limits() {
     GLint value = 0;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &value);
-    limits_.max_texture_size = static_cast<uint32_t>(value);
     gpu_info_.max_texture_size = static_cast<uint32_t>(value);
 
     glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE, &value);
-    limits_.max_cube_map_texture_size = static_cast<uint32_t>(value);
     gpu_info_.max_cube_map_texture_size = static_cast<uint32_t>(value);
 
     glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &value);
@@ -397,18 +395,21 @@ void GLESCRenderer::query_limits() {
     gpu_info_.max_renderbuffer_size = static_cast<uint32_t>(value);
 
     glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS, &value);
-    limits_.max_color_attachments = static_cast<uint32_t>(value);
     gpu_info_.max_color_attachments = static_cast<uint32_t>(value);
+    if (static_cast<uint32_t>(value) < limits_.max_color_attachments) {
+        limits_.max_color_attachments = static_cast<uint32_t>(value);
+    }
 
     glGetIntegerv(GL_MAX_SAMPLES, &value);
     limits_.max_framebuffer_samples = value > 0 ? static_cast<uint32_t>(value) : 0u;
     gpu_info_.max_samples = limits_.max_framebuffer_samples;
 
     glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &value);
-    limits_.max_vertex_attributes = static_cast<uint32_t>(value);
+    if (static_cast<uint32_t>(value) < limits_.max_vertex_attributes) {
+        limits_.max_vertex_attributes = static_cast<uint32_t>(value);
+    }
 
-    glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS, &value);
-    limits_.max_uniform_buffer_range = static_cast<uint32_t>(value);
+    glGetIntegerv(GL_MAX_UNIFORM_BLOCK_SIZE, &value);
     gpu_info_.max_uniform_buffer_size = static_cast<uint32_t>(value);
 }
 

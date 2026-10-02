@@ -38,7 +38,10 @@ public:
         bool active = false;
     };
 
+    // Ring buffer: erase(begin()) on a bounded vector memmoves the whole
+    // history every frame (tens of KB) for no reason.
     std::vector<FrameData> frame_history;
+    size_t history_head = 0;
     std::unordered_map<std::string, GpuTimer> gpu_timers;
     std::unordered_map<std::string, CpuTimer> cpu_timers;
     std::mutex mutex;
@@ -66,6 +69,7 @@ bool Profiler::initialize(RendererBase* renderer) {
 void Profiler::shutdown() {
     std::lock_guard<std::mutex> lock(pImpl->mutex);
     pImpl->frame_history.clear();
+    pImpl->history_head = 0;
     pImpl->gpu_timers.clear();
     pImpl->cpu_timers.clear();
 }
@@ -78,10 +82,12 @@ void Profiler::beginFrame(uint64_t frame_number) {
     frame.frame_number = frame_number;
     frame.start_time = std::chrono::steady_clock::now();
     
-    if (pImpl->frame_history.size() >= pImpl->max_frames_history) {
-        pImpl->frame_history.erase(pImpl->frame_history.begin());
+    if (pImpl->frame_history.size() < pImpl->max_frames_history) {
+        pImpl->frame_history.push_back(std::move(frame));
+    } else {
+        pImpl->frame_history[pImpl->history_head] = std::move(frame);
+        pImpl->history_head = (pImpl->history_head + 1) % pImpl->max_frames_history;
     }
-    pImpl->frame_history.push_back(std::move(frame));
 }
 
 void Profiler::endFrame(uint64_t frame_number, double frame_time_ms, double cpu_time_ms, double gpu_time_ms, uint32_t draw_calls) {
@@ -89,7 +95,11 @@ void Profiler::endFrame(uint64_t frame_number, double frame_time_ms, double cpu_
     if (!pImpl->enabled) return;
 
     if (!pImpl->frame_history.empty()) {
-        auto& frame = pImpl->frame_history.back();
+        const size_t newest =
+            (pImpl->frame_history.size() < pImpl->max_frames_history)
+                ? pImpl->frame_history.size() - 1
+                : (pImpl->history_head + pImpl->max_frames_history - 1) % pImpl->max_frames_history;
+        auto& frame = pImpl->frame_history[newest];
         frame.frame_time_ms = frame_time_ms;
         frame.cpu_time_ms = cpu_time_ms;
         frame.gpu_time_ms = gpu_time_ms;
@@ -156,15 +166,27 @@ double Profiler::endCpuTimer(const std::string& name) {
 }
 
 void Profiler::recordDrawCall() {
-    // Draw calls are counted in endFrame
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    if (!pImpl->enabled || pImpl->frame_history.empty()) {
+        return;
+    }
+    const size_t newest =
+        (pImpl->frame_history.size() < pImpl->max_frames_history)
+            ? pImpl->frame_history.size() - 1
+            : (pImpl->history_head + pImpl->max_frames_history - 1) % pImpl->max_frames_history;
+    ++pImpl->frame_history[newest].draw_calls;
 }
 
 void Profiler::recordMemoryUsage(uint64_t gpu_memory, uint64_t cpu_memory) {
     std::lock_guard<std::mutex> lock(pImpl->mutex);
     if (!pImpl->enabled || pImpl->frame_history.empty()) return;
+    const size_t newest =
+        (pImpl->frame_history.size() < pImpl->max_frames_history)
+            ? pImpl->frame_history.size() - 1
+            : (pImpl->history_head + pImpl->max_frames_history - 1) % pImpl->max_frames_history;
 
-    pImpl->frame_history.back().gpu_memory = gpu_memory;
-    pImpl->frame_history.back().cpu_memory = cpu_memory;
+    pImpl->frame_history[newest].gpu_memory = gpu_memory;
+    pImpl->frame_history[newest].cpu_memory = cpu_memory;
 }
 
 Profiler::Stats Profiler::getStats() const {
@@ -229,6 +251,7 @@ void Profiler::setEnabled(bool enabled) {
 }
 
 bool Profiler::isEnabled() const {
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
     return pImpl->enabled;
 }
 

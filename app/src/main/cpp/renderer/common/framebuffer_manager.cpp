@@ -105,7 +105,11 @@ void FramebufferManager::createSwapchainFramebuffers(uint64_t swapchain, const s
         sfb.width = width;
         sfb.height = height;
 
-        onCreateSwapchainFramebuffer(sfb.handle, swapchain, images[i], depth_image, width, height);
+        // Never record a framebuffer the backend failed to create: callers would
+        // submit a null render target and lose the device.
+        if (!onCreateSwapchainFramebuffer(sfb.handle, swapchain, images[i], depth_image, width, height)) {
+            return;
+        }
         pImpl->swapchain_framebuffers.push_back(std::move(sfb));
     }
 }
@@ -119,15 +123,20 @@ void FramebufferManager::destroySwapchainFramebuffers() {
 }
 
 void FramebufferManager::onSurfaceChanged(uint32_t width, uint32_t height) {
+    // Called from the surface callback thread while the render thread reads
+    // these: without the lock a torn read yields a wrong viewport.
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
     pImpl->surface_width = width;
     pImpl->surface_height = height;
 }
 
 uint32_t FramebufferManager::getSurfaceWidth() const {
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
     return pImpl->surface_width;
 }
 
 uint32_t FramebufferManager::getSurfaceHeight() const {
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
     return pImpl->surface_height;
 }
 

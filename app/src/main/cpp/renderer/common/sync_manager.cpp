@@ -1,6 +1,9 @@
 #include "sync_manager.h"
 #include "renderer_base.h"
 
+#include <chrono>
+#include <memory>
+#include <unordered_map>
 #include <vector>
 #include <mutex>
 #include <condition_variable>
@@ -26,7 +29,9 @@ public:
         bool set = false;
     };
 
-    std::unordered_map<uint64_t, Fence> fences;
+    // shared_ptr keeps a fence alive for the duration of a wait, so a
+    // concurrent destroyFence cannot free it underneath the waiter.
+    std::unordered_map<uint64_t, std::shared_ptr<Fence>> fences;
     std::unordered_map<uint64_t, Semaphore> semaphores;
     std::unordered_map<uint64_t, Event> events;
     uint64_t next_fence_handle = 1;
@@ -68,15 +73,15 @@ uint64_t SyncManager::createFence(bool signaled) {
     std::lock_guard<std::mutex> lock(pImpl->mutex);
     uint64_t handle = pImpl->next_fence_handle++;
 
-    Impl::Fence fence;
-    fence.handle = handle;
-    fence.signaled = signaled;
+    auto fence = std::make_shared<Impl::Fence>();
+    fence->handle = handle;
+    fence->signaled = signaled;
 
     if (!onCreateFence(handle, signaled)) {
         return 0;
     }
 
-    pImpl->fences[handle] = std::move(fence);
+    pImpl->fences[handle] = fence;
     return handle;
 }
 
@@ -91,22 +96,27 @@ void SyncManager::destroyFence(uint64_t handle) {
 }
 
 bool SyncManager::waitFence(uint64_t handle, uint64_t timeout_ns) {
-    auto it = pImpl->fences.find(handle);
-    if (it == pImpl->fences.end()) {
-        return false;
+    std::shared_ptr<Impl::Fence> fence;
+    {
+        // The map must be read under the lock; previously the lookup happened
+        // outside it, which is a use-after-free on any concurrent create/destroy.
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        auto it = pImpl->fences.find(handle);
+        if (it == pImpl->fences.end()) {
+            return false;
+        }
+        fence = it->second;
     }
 
-    if (it->second.signaled) {
+    std::unique_lock<std::mutex> lock(*fence->mutex);
+    if (fence->signaled) {
         return true;
     }
-
     if (timeout_ns == 0) {
         return false;
     }
-
-    std::unique_lock<std::mutex> lock(*it->second.mutex);
-    return it->second.cv->wait_for(lock, std::chrono::nanoseconds(timeout_ns), [&]() {
-        return it->second.signaled;
+    return fence->cv->wait_for(lock, std::chrono::nanoseconds(timeout_ns), [&]() {
+        return fence->signaled;
     });
 }
 
@@ -116,9 +126,11 @@ void SyncManager::signalFence(uint64_t handle) {
     if (it == pImpl->fences.end()) {
         return;
     }
-    std::lock_guard<std::mutex> fence_lock(*it->second.mutex);
-    it->second.signaled = true;
-    it->second.cv->notify_all();
+    {
+        std::lock_guard<std::mutex> fence_lock(*it->second->mutex);
+        it->second->signaled = true;
+    }
+    it->second->cv->notify_all();
     onSignalFence(handle);
 }
 
@@ -128,17 +140,28 @@ void SyncManager::resetFence(uint64_t handle) {
     if (it == pImpl->fences.end()) {
         return;
     }
-    it->second.signaled = false;
+    {
+        // Reset under the fence lock and wake any waiter so it observes the new
+        // state instead of sleeping out the full timeout.
+        std::lock_guard<std::mutex> fence_lock(*it->second->mutex);
+        it->second->signaled = false;
+    }
+    it->second->cv->notify_all();
     onResetFence(handle);
 }
 
 bool SyncManager::isFenceSignaled(uint64_t handle) const {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    auto it = pImpl->fences.find(handle);
-    if (it == pImpl->fences.end()) {
-        return false;
+    std::shared_ptr<Impl::Fence> fence;
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        auto it = pImpl->fences.find(handle);
+        if (it == pImpl->fences.end()) {
+            return false;
+        }
+        fence = it->second;
     }
-    return it->second.signaled;
+    std::lock_guard<std::mutex> fence_lock(*fence->mutex);
+    return fence->signaled;
 }
 
 uint64_t SyncManager::createSemaphore(uint64_t initial_value) {
@@ -173,7 +196,11 @@ void SyncManager::signalSemaphore(uint64_t handle, uint64_t value) {
     if (it == pImpl->semaphores.end()) {
         return;
     }
-    it->second.value = value;
+    // Timeline semantics: signal adds to the counter, it does not replace it.
+    if (!pImpl->supports_timeline_semaphores && value > 1) {
+        return;
+    }
+    it->second.value += value;
     onSignalSemaphore(handle, value);
 }
 
@@ -187,9 +214,15 @@ uint64_t SyncManager::getSemaphoreValue(uint64_t handle) const {
 }
 
 bool SyncManager::waitSemaphore(uint64_t handle, uint64_t value, uint64_t timeout_ns) {
-    // Timeline semaphore wait
-    // In a real implementation, this would use vkWaitSemaphores or similar
-    return true;
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    auto it = pImpl->semaphores.find(handle);
+    if (it == pImpl->semaphores.end()) {
+        return false;
+    }
+    // Without a timeline-s semaphore the GPU side cannot be waited on here;
+    // report the host-visible counter honestly instead of always claiming
+    // success.
+    return it->second.value >= value;
 }
 
 uint64_t SyncManager::createEvent() {

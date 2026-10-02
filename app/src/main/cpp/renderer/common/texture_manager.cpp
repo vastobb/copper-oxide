@@ -1,11 +1,28 @@
 #include "texture_manager.h"
 #include "renderer_base.h"
 
+#include <algorithm>
 #include <unordered_map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace copper {
+
+namespace {
+
+// Full mip chain for a 2D texture: 1 + floor(log2(max(w, h))).
+uint32_t fullMipLevels(uint32_t width, uint32_t height) {
+    uint32_t largest = width > height ? width : height;
+    uint32_t levels = 1;
+    while (largest > 1) {
+        largest >>= 1;
+        levels++;
+    }
+    return levels;
+}
+
+} // namespace
 
 class TextureManager::Impl {
 public:
@@ -179,7 +196,7 @@ uint64_t TextureManager::loadTextureFromMemory(const void* data, uint64_t size, 
     Impl::Texture texture;
     texture.handle = handle;
     texture.format = format;
-    texture.mip_levels = generate_mipmaps ? 0 : 1; // 0 = auto
+    texture.mip_levels = generate_mipmaps ? fullMipLevels(width, height) : 1;
 
     if (!onLoadTextureFromMemory(handle, data, size, format, generate_mipmaps)) {
         return 0;
@@ -190,14 +207,23 @@ uint64_t TextureManager::loadTextureFromMemory(const void* data, uint64_t size, 
 }
 
 uint64_t TextureManager::getOrCreateTexture(const std::string& key, std::function<uint64_t()> creator) {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    auto it = pImpl->texture_cache.find(key);
-    if (it != pImpl->texture_cache.end()) {
-        return it->second;
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        auto it = pImpl->texture_cache.find(key);
+        if (it != pImpl->texture_cache.end()) {
+            return it->second;
+        }
     }
-    uint64_t handle = creator();
+    // creator() calls createTexture*, which takes the mutex itself: invoking it
+    // under the lock would self-deadlock.
     if (handle != 0) {
-        pImpl->texture_cache[key] = handle;
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        // Another thread may have won the race; keep the first handle so all
+        // callers share one texture.
+        auto [it, inserted] = pImpl->texture_cache.emplace(key, handle);
+        if (!inserted) {
+            return it->second;
+        }
     }
     return handle;
 }
