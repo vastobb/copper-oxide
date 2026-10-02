@@ -150,6 +150,7 @@ private:
     GPUInfo gpu_info_;
     RendererLimits limits_;
     FrameStats frame_stats_;
+    RendererFeature supported_features_ = RendererFeature::None;
     bool initialized_ = false;
     bool surface_created_ = false;
 

@@ -553,6 +553,35 @@ bool VulkanRenderer::initializeManagers() {
     return true;
 }
 
+void VulkanRenderer::onMemoryPressure(int level) {
+    if (level <= 0) return;
+    if (texture_manager_) { texture_manager_->trimCache(level); }
+}
+
+void VulkanRenderer::onThermalThrottling(float temperatureRatio) {
+    if (temperatureRatio > 0.9f) {
+        reduceQuality();
+    }
+}
+
+bool VulkanRenderer::supportsFeature(RendererFeature feature) const {
+    return (static_cast<uint32_t>(feature) & static_cast<uint32_t>(supported_features_)) != 0;
+}
+
+bool VulkanRenderer::isExtensionSupported(const std::string& extension) const {
+    for (const auto& ext : gpu_info_.extensions) {
+        if (ext == extension) return true;
+    }
+    return false;
+}
+
+void VulkanRenderer::waitIdle() {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    if (device_ != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device_);
+    }
+}
+
 void VulkanRenderer::onSurfaceChanged(uint32_t width, uint32_t height) {
     onResize(width, height);
 }

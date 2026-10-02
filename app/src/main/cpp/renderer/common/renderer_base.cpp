@@ -13,6 +13,7 @@
 
 #include <mutex>
 #include <atomic>
+#include <chrono>
 
 namespace copper {
 
@@ -258,8 +259,19 @@ SyncManager* RendererBase::getSyncManager() {
     return pImpl->syncManager.get();
 }
 
+CommandBuffer* RendererBase::getCommandBuffer() {
+    return nullptr;
+}
+
 ResourcePool* RendererBase::getResourcePool() {
     return pImpl->resourcePool.get();
+}
+
+uint64_t RendererBase::getCurrentTimeNs() const {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
 }
 
 Profiler* RendererBase::getProfiler() {

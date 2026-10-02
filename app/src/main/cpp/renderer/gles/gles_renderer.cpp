@@ -233,6 +233,37 @@ void GLESCRenderer::onSurfaceDestroyed() {
     eglMakeCurrent(egl_display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 }
 
+void GLESCRenderer::onMemoryPressure(int level) {
+    if (level <= 0) return;
+    if (buffer_manager_) { buffer_manager_.reset(); }
+    // Trim cached textures/buffers
+    if (texture_manager_) { texture_manager_->trimCache(level); }
+}
+
+void GLESCRenderer::onThermalThrottling(float temperatureRatio) {
+    if (temperatureRatio > 0.9f) {
+        reduceQuality();
+    }
+}
+
+bool GLESCRenderer::supportsFeature(RendererFeature feature) const {
+    return (static_cast<uint32_t>(feature) & static_cast<uint32_t>(supported_features_)) != 0;
+}
+
+bool GLESCRenderer::isExtensionSupported(const std::string& extension) const {
+    for (const auto& ext : gpu_info_.extensions) {
+        if (ext == extension) return true;
+    }
+    return false;
+}
+
+void GLESCRenderer::waitIdle() {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    if (initialized_) {
+        glFinish();
+    }
+}
+
 bool GLESCRenderer::detectGPU() {
     return query_gpu_info();
 }
