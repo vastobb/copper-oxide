@@ -7,6 +7,7 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <vector>
 
@@ -40,6 +41,12 @@ public:
 
     void setProfiler(Profiler* profiler);
     void setSwapchainFramebuffers(const std::vector<VkFramebuffer>& framebuffers);
+
+    // Resolves a BufferManager handle to the VkBuffer it owns. Required before
+    // drawIndirect can work; without it that command is counted as dropped
+    // rather than casting a manager-local id into a driver pointer.
+    using IndirectResolver = std::function<VkBuffer(uint64_t buffer_handle)>;
+    void setIndirectResolver(IndirectResolver resolver);
     VkFramebuffer defaultFramebuffer() const;
 
     uint64_t droppedCommandCount() const;

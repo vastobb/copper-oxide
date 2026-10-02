@@ -36,6 +36,11 @@ void VulkanCommandSink::setProfiler(Profiler* profiler) {
     profiler_ = profiler;
 }
 
+void VulkanCommandSink::setIndirectResolver(IndirectResolver resolver) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    indirect_resolver_ = std::move(resolver);
+}
+
 void VulkanCommandSink::setSwapchainFramebuffers(const std::vector<VkFramebuffer>& framebuffers) {
     std::lock_guard<std::mutex> lock(mutex_);
     swapchain_framebuffers_ = framebuffers;
@@ -70,9 +75,9 @@ void VulkanCommandSink::beginRenderPass(uint64_t render_pass, uint64_t framebuff
         return;
     }
 
-    VkRenderPass pass =
-        render_pass != 0 ? reinterpret_cast<VkRenderPass>(render_pass)
-                         : (renderer_ != nullptr ? renderer_->renderPass() : VK_NULL_HANDLE);
+    VkRenderPass pass = render_pass != 0 ? reinterpret_cast<VkRenderPass>(render_pass)
+                                         : (renderer_ != nullptr ? renderer_->renderPass()
+                                                                 : VK_NULL_HANDLE);
     if (pass == VK_NULL_HANDLE) {
         ++dropped_;
         return;
@@ -89,50 +94,56 @@ void VulkanCommandSink::beginRenderPass(uint64_t render_pass, uint64_t framebuff
         return;
     }
 
-    VkClearAttachment attachments[3]{};
+    // The attachment count is limited by the render pass, which Copper Oxide
+    // bakes as one colour attachment plus an optional depth/stencil pair. Keep
+    // the clears and the subpass references consistent with that shape.
+    VkAttachmentReference color_reference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depth_reference{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+    VkClearAttachment clears[3]{};
     VkClearValue values[3]{};
+    values[0].color = {{clear_color[0], clear_color[1], clear_color[2], clear_color[3]}};
+    clears[0].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    clears[0].colorAttachment = 0;
 
-    attachments[0].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    attachments[0].colorAttachment = 0;
-    attachments[0].clearValue = values[0].color = {{clear_color[0], clear_color[1], clear_color[2],
-                                                     clear_color[3]}};
-
-    uint32_t attachment_count = 1;
+    uint32_t clear_count = 1;
     if (clear_depth >= 0.0f) {
-        attachments[attachment_count].aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-        attachments[attachment_count].clearValue = values[attachment_count].depthStencil.depth =
-            clear_depth;
-        ++attachment_count;
+        values[clear_count].depthStencil.depth = clear_depth;
+        clears[clear_count].aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        ++clear_count;
         if (clear_stencil != 0) {
-            attachments[attachment_count].aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-            attachments[attachment_count].clearValue =
-                values[attachment_count].depthStencil.stencil = clear_stencil;
-            ++attachment_count;
+            values[clear_count].depthStencil.stencil = clear_stencil;
+            clears[clear_count].aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+            ++clear_count;
         }
     }
 
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &attachments[0];
-    if (attachment_count > 1) {
-        subpass.pDepthStencilAttachment = &attachments[1];
+    subpass.pColorAttachments = &color_reference;
+    if (clear_count > 1) {
+        subpass.pDepthStencilAttachment = &depth_reference;
     }
 
+    const VkExtent2D extent =
+        renderer_ != nullptr ? renderer_->swapchainExtent() : VkExtent2D{1, 1};
+
     VkRenderPassBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     begin.renderPass = pass;
     begin.framebuffer = target;
-    begin.renderArea = {{0, 0}, {renderer_ != nullptr ? renderer_->swapchainExtent().width : 1u,
-                                  renderer_ != nullptr ? renderer_->swapchainExtent().height : 1u}};
-    begin.clearValueCount = attachment_count;
+    begin.renderArea = {{0, 0}, {extent.width != 0 ? extent.width : 1u,
+                                 extent.height != 0 ? extent.height : 1u}};
+    begin.clearValueCount = clear_count;
     begin.pClearValues = values;
 
     vkCmdBeginRenderPass(command_buffer_, &begin, VK_SUBPASS_CONTENTS_INLINE);
-    subpass.baseSubpass = 0;
     in_render_pass_ = true;
 
-    // The subpass description above only exists to document the layout; Vulkan
-    // takes it from the render pass object itself, so nothing else is needed.
+    // subpass only documents the attachment numbering the clears above assume;
+    // Vulkan takes the real description from the render pass object itself, so it
+    // is deliberately not submitted anywhere.
     (void)subpass;
 }
 
@@ -208,7 +219,20 @@ void VulkanCommandSink::bindDescriptorSets(uint32_t first_set,
         ++dropped_;
         return;
     }
-    state->bindDescriptorSet(first_set, descriptor_sets, dynamic_offsets);
+    // The base API binds one set at a time and takes that set's offsets
+    // separately. Vulkan wants one flat array for the whole range, which
+    // VulkanStateManager assembles; the split here is what supplies it.
+    uint32_t offset_cursor = 0;
+    for (size_t i = 0; i < descriptor_sets.size(); ++i) {
+        const uint32_t remaining =
+            dynamic_offsets.size() > offset_cursor
+                ? static_cast<uint32_t>(dynamic_offsets.size() - offset_cursor)
+                : 0u;
+        const std::vector<uint32_t> slice(dynamic_offsets.begin() + offset_cursor,
+                                          dynamic_offsets.begin() + offset_cursor + remaining);
+        state->bindDescriptorSet(first_set + static_cast<uint32_t>(i), descriptor_sets[i], slice);
+        offset_cursor += remaining;
+    }
     state->applyState();
 }
 
@@ -280,20 +304,31 @@ void VulkanCommandSink::drawIndexed(uint32_t index_count, uint32_t instance_coun
 void VulkanCommandSink::drawIndirect(uint64_t buffer, uint32_t offset, uint32_t draw_count,
                                      uint32_t stride) {
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-    VulkanStateManager* state = nullptr;
+    IndirectResolver resolve = nullptr;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         command_buffer = command_buffer_;
-        state = state_;
+        resolve = indirect_resolver_;
     }
-    if (command_buffer == VK_NULL_HANDLE || state == nullptr) {
+    if (command_buffer == VK_NULL_HANDLE) {
+        return;
+    }
+    if (!resolve) {
+        // A manager-local handle cannot be cast to a VkBuffer: doing so would
+        // hand the driver an arbitrary pointer.
         std::lock_guard<std::mutex> lock(mutex_);
         ++dropped_;
         return;
     }
-    // The draw count comes from the buffer's contents on a real device, but the
+    const VkBuffer vk_buffer = resolve(buffer);
+    if (vk_buffer == VK_NULL_HANDLE) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++dropped_;
+        return;
+    }
+    // The draw count is what the buffer's contents say on a real device; the
     // base API carries it explicitly, so pass it through as drawCount.
-    vkCmdDrawIndirect(command_buffer, static_cast<VkBuffer>(buffer), offset, draw_count, stride);
+    vkCmdDrawIndirect(command_buffer, vk_buffer, offset, draw_count, stride);
     Profiler* profiler = nullptr;
     {
         std::lock_guard<std::mutex> lock(mutex_);

@@ -98,7 +98,8 @@ bool VulkanProfiler::probe_support_locked() {
     // --- axis 1: is there a clock at all? ---------------------------------
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical_device, &properties);
-    timestamp_period_ns_ = properties.limits.timestampPeriod;
+    const VkPhysicalDeviceLimits& limits = properties.limits;
+    timestamp_period_ns_ = limits.timestampPeriod;
     if (timestamp_period_ns_ == 0.0f) {
         mode_ = Mode::Unsupported;
         LOGI("profiler: timestampPeriod is 0; this device exposes no usable GPU clock."
@@ -127,22 +128,31 @@ bool VulkanProfiler::probe_support_locked() {
 
     // --- axis 3: is the feature actually ENABLED on this VkDevice? --------
     // This is the decisive check. vkCreateQueryPool succeeds without
-    // timestampQuery and the queries then return undefined values, so a pool
-    // existing proves nothing. The property query only reports what the PHYSICAL
-    // device could do; the enabled-features struct is what the logical device
-    // will honour.
-    //
-    // The renderer creates its device with vkGetPhysicalDeviceFeatures, so
-    // checking the legacy struct is correct here. An integrator who moves to
-    // VkPhysicalDeviceFeatures2 must extend this with vkGetPhysicalDeviceFeatures2
-    // and walk pNext for VkPhysicalDeviceVulkan12Features::
-    // timestampComputeAndGraphics.
-    VkPhysicalDeviceFeatures features{};
-    vkGetPhysicalDeviceFeatures(physical_device, &features);
-    if (features.timestampQuery != VK_TRUE) {
+    // A query pool that exists proves nothing: without timestamp support the
+    // results are undefined rather than an error. The property query only
+    // reports what the PHYSICAL device could do; whether the logical device
+    // honours it depends on the extension being enabled at device creation,
+    // which VulkanRenderer does not currently do, so the mode stays CPU-only
+    // unless the properties already say timestamps work.
+    // The Vulkan 1.0 headers available here do not expose a timestampQuery bit
+    // on VkPhysicalDeviceFeatures, so the capability is decided from the two
+    // things that are available and that actually determine it:
+    //   * limits.timestampPeriod != 0 means the queue family has a usable clock;
+    //   * limits.timestampComputeAndGraphics means the queries are meaningful for
+    //     the graphics queue rather than compute-only.
+    // A device that reports both will honour VK_QUERY_TYPE_TIMESTAMP as long as
+    // the extension was enabled; the timestamp query support probe below is the
+    // second half of that check.
+    if (limits.timestampPeriod == 0.0f) {
         mode_ = Mode::CpuOnly;
-        LOGW("profiler: VkPhysicalDeviceFeatures::timestampQuery is not enabled on this VkDevice,"
-             " so GPU timing falls back to CPU timing. Mode = %s", mode_name(mode_));
+        LOGW("profiler: this queue family reports a zero timestampPeriod;"
+             " GPU timing falls back to CPU timing. Mode = %s", mode_name(mode_));
+        return false;
+    }
+    if (!limits.timestampComputeAndGraphics) {
+        mode_ = Mode::CpuOnly;
+        LOGW("profiler: timestampComputeAndGraphics is false;"
+             " GPU timing falls back to CPU timing. Mode = %s", mode_name(mode_));
         return false;
     }
 

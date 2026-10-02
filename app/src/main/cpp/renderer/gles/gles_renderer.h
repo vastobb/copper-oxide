@@ -21,8 +21,7 @@
 #include "gles_sync_manager.h"
 #include "gles_resource_pool.h"
 #include "gles_profiler.h"
-#include "gles_command_buffer.h"
-#include "gles_command_sink.h"
+#include "gles_command_buffer.h"  // also declares GLESCommandSink
 
 #include <GLES3/gl32.h>
 #include <EGL/egl.h>

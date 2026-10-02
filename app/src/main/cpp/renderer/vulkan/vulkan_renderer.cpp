@@ -999,6 +999,8 @@ bool VulkanRenderer::initializeBackendManagers() {
     // buffers are built, because createCommandBuffer() hands them the sink.
     command_sink_ = std::make_unique<VulkanCommandSink>(this, state);
     command_sink_->setProfiler(getProfiler());
+    command_sink_->setIndirectResolver(
+        [buffers](uint64_t handle) { return buffers->vkBuffer(handle); });
 
     if (!registerStateManager(std::move(state_manager))) {
         return false;

@@ -85,7 +85,9 @@ public:
 
     // Adopts the renderer if the instance was built without one, so a manager
     // created by the backend factory before GLESCRenderer exists still works.
-    bool initialize(RendererBase* renderer) override;
+    // Not marked override: the base's initialize() is deliberately non-virtual,
+    // because the factory constructs the concrete type already.
+    bool initialize(RendererBase* renderer);
 
     // GL name of a handle, 0 when unknown. The state/command manager binds this
     // name directly, which is the whole point of keeping the mapping here.
