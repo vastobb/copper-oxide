@@ -74,6 +74,10 @@ android {
             isMinifyEnabled = false
             isShrinkResources = false
             isDebuggable = true
+            // x86_64 lets the debug APK run on CI emulators; release stays arm64.
+            ndk {
+                abiFilters += listOf("x86_64")
+            }
         }
     }
 
