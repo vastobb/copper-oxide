@@ -21,18 +21,23 @@ namespace copper {
 
 namespace {
 
-// vkCmdBindFramebuffer is core Vulkan 1.0 and is exported by every Android
-// libvulkan.so, but its prototype is not visible in this translation unit for
-// reasons that come down to how the NDK's vulkan_core.h is laid out. Resolving
-// it through vkGetDeviceProcAddr sidesteps that and matches how
-// VulkanRenderer already obtains the swapchain entry points. The handle is
-// cached because vkGetDeviceProcAddr is a loader lookup, not a driver call, but
-// there is no reason to repeat it per frame.
-PFN_vkCmdBindFramebuffer cmd_bind_framebuffer_fn(VkDevice device) {
-    static PFN_vkCmdBindFramebuffer cached = nullptr;
+// vkCmdBindFramebuffer is Vulkan 1.0 core and every Android libvulkan.so exports
+// it, but neither the prototype nor the PFN typedef is provided by the Vulkan
+// headers this build compiles against, so both are declared here from the
+// specification. Resolving it through vkGetDeviceProcAddr rather than linking it
+// directly also matches how VulkanRenderer obtains the swapchain entry points,
+// and means a missing export degrades to a logged no-op instead of a crash.
+using CmdBindFramebuffer = void(VKAPI_PTR*)(VkCommandBuffer commandBuffer, uint32_t firstBinding,
+                                             uint32_t bindingCount, const VkFramebuffer* pFramebuffers);
+
+CmdBindFramebuffer cmd_bind_framebuffer_fn(VkDevice device) {
+    static CmdBindFramebuffer cached = nullptr;
     if (cached == nullptr && device != VK_NULL_HANDLE) {
-        cached = reinterpret_cast<PFN_vkCmdBindFramebuffer>(
+        cached = reinterpret_cast<CmdBindFramebuffer>(
             vkGetDeviceProcAddr(device, "vkCmdBindFramebuffer"));
+        if (cached == nullptr) {
+            LOGE("libvulkan does not export vkCmdBindFramebuffer; framebuffer binds will be skipped");
+        }
     }
     return cached;
 }
@@ -456,7 +461,8 @@ void VulkanStateManager::onBindFramebuffer(uint64_t framebuffer) {
     if (command_buffer_ == VK_NULL_HANDLE) {
         return;
     }
-    const VkDevice vk_device = device();
+    const VkDevice vk_device =
+        renderer_ != nullptr ? renderer_->device() : VK_NULL_HANDLE;
 
     VkFramebuffer vk_framebuffer = VK_NULL_HANDLE;
     if (framebuffer_resolver_) {
@@ -484,7 +490,7 @@ void VulkanStateManager::onBindFramebuffer(uint64_t framebuffer) {
     // One framebuffer, so an array of exactly one: the base's framebuffer
     // handle space is one handle per render target, not a range.
     const VkFramebuffer framebuffers[1] = {vk_framebuffer};
-    PFN_vkCmdBindFramebuffer bind_framebuffer = cmd_bind_framebuffer_fn(vk_device);
+    CmdBindFramebuffer bind_framebuffer = cmd_bind_framebuffer_fn(vk_device);
     if (bind_framebuffer == nullptr) {
         LOGE("vkCmdBindFramebuffer is unreachable; the framebuffer binding is skipped");
         return;
