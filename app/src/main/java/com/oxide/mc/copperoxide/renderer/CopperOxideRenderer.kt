@@ -490,14 +490,14 @@ open class CopperOxideRenderer(
      * reordering the entries can never silently change what reaches JNI.
      */
     enum class BufferUsage(val code: Int) {
-        NONE(0),
-        VERTEX(1),
-        INDEX(2),
-        UNIFORM(4),
-        STORAGE(8),
-        TRANSFER_SRC(16),
-        TRANSFER_DST(32),
-        INDIRECT(64),
+        None(0),
+        Vertex(1),
+        Index(2),
+        Uniform(4),
+        Storage(8),
+        TransferSrc(16),
+        TransferDst(32),
+        Indirect(64),
         ;
 
         companion object {
@@ -513,28 +513,28 @@ open class CopperOxideRenderer(
      * number means the same thing on both backends.
      */
     enum class TextureFormat(val code: Int) {
-        NONE(0),
+        None(0),
         R8(1),
-        RG8(2),
-        RGB8(3),
-        RGBA8(4),
-        SRGB8_ALPHA8(5),
-        RGBA16F(8),
-        R32F(10),
-        RGBA32F(13),
-        DEPTH16(16),
-        DEPTH24_STENCIL8(19),
-        ASTC_4x4(24),
-        ETC2_RGBA8(36),
+        Rg8(2),
+        Rgb8(3),
+        Rgba8(4),
+        Srgb8Alpha8(5),
+        Rgba16f(8),
+        R32f(10),
+        Rgba32f(13),
+        Depth16(16),
+        Depth24Stencil8(19),
+        Astc4x4(24),
+        Etc2Rgba8(36),
     }
 
     /** Texture usage flags. */
     enum class TextureUsage(val code: Int) {
-        NONE(0),
-        SAMPLED(1),
-        COLOR_ATTACHMENT(2),
-        DEPTH_ATTACHMENT(4),
-        STORAGE(8),
+        None(0),
+        Sampled(1),
+        ColorAttachment(2),
+        DepthAttachment(4),
+        Storage(8),
         ;
 
         companion object {
@@ -544,16 +544,16 @@ open class CopperOxideRenderer(
 
     /** Shader stage, matching the native `ShaderStage` enum ordinal. */
     enum class ShaderStage(val code: Int) {
-        VERTEX(0),
-        FRAGMENT(1),
-        COMPUTE(2),
-        GEOMETRY(3),
+        Vertex(0),
+        Fragment(1),
+        Compute(2),
+        Geometry(3),
     }
 
     /** Index width passed to [bindIndexBuffer] and [drawIndexed]. */
     enum class IndexType(val code: Int) {
-        UINT16(0),
-        UINT32(1),
+        Uint16(0),
+        Uint32(1),
     }
 
     // -----------------------------------------------------------------------
@@ -567,7 +567,7 @@ open class CopperOxideRenderer(
      * backend has no buffer manager, so a caller that forgets to check
      * [isInitialized] degrades to "nothing is drawn" rather than a crash.
      */
-    fun createBuffer(sizeBytes: Long, usage: BufferUsage = BufferUsage.VERTEX): ResourceHandle {
+    fun createBuffer(sizeBytes: Long, usage: BufferUsage = BufferUsage.Vertex): ResourceHandle {
         require(sizeBytes > 0) { "sizeBytes must be positive, was $sizeBytes" }
         return ResourceHandle(nativeCreateBuffer(sizeBytes, usage.code))
     }
@@ -586,8 +586,8 @@ open class CopperOxideRenderer(
     fun createTexture2D(
         width: Int,
         height: Int,
-        format: TextureFormat = TextureFormat.RGBA8,
-        usage: Int = TextureUsage.SAMPLED.code,
+        format: TextureFormat = TextureFormat.Rgba8,
+        usage: Int = TextureUsage.Sampled.code,
         mipLevels: Int = 1
     ): ResourceHandle {
         require(width > 0 && height > 0) { "texture extent must be positive" }
@@ -650,7 +650,7 @@ open class CopperOxideRenderer(
         nativeBindVertexBuffers(firstBinding, buffers, offsets)
     }
 
-    fun bindIndexBuffer(buffer: ResourceHandle, indexType: IndexType = IndexType.UINT16) =
+    fun bindIndexBuffer(buffer: ResourceHandle, indexType: IndexType = IndexType.Uint16) =
         nativeBindIndexBuffer(buffer.value, indexType.code)
 
     fun setViewport(x: Float, y: Float, width: Float, height: Float) =

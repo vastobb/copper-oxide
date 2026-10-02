@@ -1573,8 +1573,11 @@ void VulkanTextureManager::onCopyTexture(uint64_t src, uint64_t dst, uint32_t sr
         // VkImageCopy has a single extent, not one per side: vkCmdCopyImage copies
         // 1:1, which the equal-extent check above already established.
         region.extent = dst_extent;
-        vkCmdCopyImage(command_buffer, src_record.transfer_view,
-                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst_record.transfer_view,
+        // vkCmdCopyImage works on images, not views: it would be a
+        // vkCmdCopyImageToImage equivalent, and the layout it needs is the one
+        // already applied to the image by the transitions above.
+        vkCmdCopyImage(command_buffer, src_record.image,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst_record.image,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
         pImpl->transition_image_locked(command_buffer, src_record.image, src_record.aspect,
@@ -1691,8 +1694,10 @@ void VulkanTextureManager::onGenerateMipmaps(uint64_t handle) {
             blit.dstOffsets[1] = VkOffset3D{static_cast<int32_t>(dst_extent.width),
                                             static_cast<int32_t>(dst_extent.height),
                                             static_cast<int32_t>(dst_extent.depth)};
-            vkCmdBlitImage(command_buffer, record.transfer_view,
-                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, record.transfer_view,
+            // Same as above: vkCmdBlitImage takes the VkImage and the layouts
+            // already transitioned on that image, not the transfer view.
+            vkCmdBlitImage(command_buffer, record.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, record.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
         }
 

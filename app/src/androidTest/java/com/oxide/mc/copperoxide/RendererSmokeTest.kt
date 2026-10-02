@@ -201,7 +201,7 @@ class RendererSmokeTest {
         val instance = requireNotNull(renderer)
         var rejected = 0
         try {
-            instance.createBuffer(0, CopperOxideRenderer.BufferUsage.VERTEX)
+            instance.createBuffer(0, CopperOxideRenderer.BufferUsage.Vertex)
         } catch (expected: IllegalArgumentException) {
             rejected++
         }
@@ -253,7 +253,7 @@ class RendererSmokeTest {
         vertices.position(0)
         vertices.get(vertexBytes)
 
-        val vertexBuffer = instance.createBuffer(vertexBytes.size.toLong(), CopperOxideRenderer.BufferUsage.VERTEX)
+        val vertexBuffer = instance.createBuffer(vertexBytes.size.toLong(), CopperOxideRenderer.BufferUsage.Vertex)
         assertTrue("vertex buffer creation failed", vertexBuffer.isValid)
         try {
             assertTrue(
@@ -290,11 +290,11 @@ class RendererSmokeTest {
         // answer is correct, but it must be deterministic and the failure path
         // must not leave a dangling handle.
         val vertexShader = instance.createShader(
-            CopperOxideRenderer.ShaderStage.VERTEX,
+            CopperOxideRenderer.ShaderStage.Vertex,
             VERTEX_SHADER,
             arrayOf("#define COPPER_TEST 1"),
         )
-        val fragmentShader = instance.createShader(CopperOxideRenderer.ShaderStage.FRAGMENT, FRAGMENT_SHADER)
+        val fragmentShader = instance.createShader(CopperOxideRenderer.ShaderStage.Fragment, FRAGMENT_SHADER)
 
         if (vertexShader.isValid && fragmentShader.isValid) {
             val pipeline = instance.createGraphicsPipeline(vertexShader, fragmentShader)
@@ -302,7 +302,7 @@ class RendererSmokeTest {
             try {
                 val drawBuffer = instance.createBuffer(
                     vertexBytes.size.toLong(),
-                    CopperOxideRenderer.BufferUsage.VERTEX,
+                    CopperOxideRenderer.BufferUsage.Vertex,
                 )
                 try {
                     assertTrue(instance.updateBuffer(drawBuffer, 0, vertexBytes))
@@ -331,7 +331,7 @@ class RendererSmokeTest {
 
         // Invalid GLSL must fail on every backend rather than produce a handle.
         val brokenShader = instance.createShader(
-            CopperOxideRenderer.ShaderStage.FRAGMENT,
+            CopperOxideRenderer.ShaderStage.Fragment,
             "this is not glsl at all",
         )
         assertFalse("malformed GLSL must not produce a shader handle", brokenShader.isValid)
