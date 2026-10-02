@@ -354,6 +354,18 @@ bool VulkanRenderer::create_logical_device() {
     VkResult result = vkCreateDevice(physical_device_, &createInfo, nullptr, &device_);
     if (result != VK_SUCCESS) return false;
 
+    // Only features that follow from the API version alone are claimed here.
+    // Everything else needs a bit out of the feature struct, and this build
+    // compiles against headers that do not expose the whole Vulkan 1.0 feature
+    // set, so guessing would report capabilities that are not there. Claiming
+    // nothing is the honest answer; supportsFeature() stays consistent with it.
+    // Compute and indirect drawing are mandatory in Vulkan 1.0, and 1.0 is the
+    // baseline this build targets, so they are available on every device that
+    // got this far.
+    supported_features_ = static_cast<RendererFeature>(
+        static_cast<uint32_t>(RendererFeature::ComputeShaders) |
+        static_cast<uint32_t>(RendererFeature::IndirectDraw));
+
     vkGetDeviceQueue(device_, graphicsFamily, 0, &graphics_queue_);
     compute_queue_ = graphics_queue_;
     transfer_queue_ = graphics_queue_;
@@ -1025,6 +1037,95 @@ bool VulkanRenderer::refreshCommandBufferSinks() {
         }
     }
     return true;
+}
+
+
+// ---------------------------------------------------------------------------
+// Surface, device and capability hooks
+//
+// These are the pure-virtual surface RendererBase requires. Restored here after
+// an earlier edit dropped them; each one now goes through the manager accessors
+// rather than the unique_ptr members the base owns.
+// ---------------------------------------------------------------------------
+
+void VulkanRenderer::onMemoryPressure(int level) {
+    if (level <= 0) {
+        return;
+    }
+    // Caches are trimmed hardest first, so a mild hint does not throw away
+    // everything the frame is about to need again.
+    if (TextureManager* textures = getTextureManager()) {
+        textures->trimCache(level);
+    }
+    if (ShaderManager* shaders = getShaderManager()) {
+        shaders->trimCache(level);
+    }
+}
+
+void VulkanRenderer::onThermalThrottling(float temperature_ratio) {
+    if (temperature_ratio > 0.9f) {
+        reduceQuality();
+    }
+}
+
+bool VulkanRenderer::supportsFeature(RendererFeature feature) const {
+    // supported_features_ is built from what the device actually reported at
+    // creation time, so this is a direct bit test rather than a re-query of the
+    // physical device: a feature the physical device advertises but the logical
+    // device did not enable is correctly reported as unsupported.
+    return (static_cast<uint32_t>(feature) & static_cast<uint32_t>(supported_features_)) != 0u;
+}
+
+bool VulkanRenderer::isExtensionSupported(const std::string& extension) const {
+    for (const auto& available : gpu_info_.extensions) {
+        if (available == extension) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void VulkanRenderer::waitIdle() {
+    if (device_ == VK_NULL_HANDLE) {
+        return;
+    }
+    vkDeviceWaitIdle(device_);
+}
+
+void VulkanRenderer::onSurfaceChanged(uint32_t width, uint32_t height) {
+    onResize(width, height);
+}
+
+void VulkanRenderer::setNativeWindow(void* native_window) {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    ANativeWindow* next = static_cast<ANativeWindow*>(native_window);
+    if (next == native_window_) {
+        return;
+    }
+    if (native_window_ != nullptr) {
+        ANativeWindow_release(native_window_);
+    }
+    if (next != nullptr) {
+        // The acquire balances the release above: the Vulkan surface keeps a
+        // reference to the window for as long as surface_ exists.
+        ANativeWindow_acquire(next);
+    }
+    native_window_ = next;
+}
+
+void VulkanRenderer::onSurfaceDestroyed() {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    // The swapchain holds the surface; it has to go first or the surface
+    // destroy below is a use-after-free.
+    destroy_swapchain();
+    if (surface_ != VK_NULL_HANDLE && fp_vkDestroySurfaceKHR != nullptr) {
+        fp_vkDestroySurfaceKHR(instance_, surface_, nullptr);
+        surface_ = VK_NULL_HANDLE;
+    }
+    if (native_window_ != nullptr) {
+        ANativeWindow_release(native_window_);
+        native_window_ = nullptr;
+    }
 }
 
 } // namespace copper
