@@ -122,7 +122,7 @@ void destroy_buffer_and_memory(VkDevice device, VmaAllocator allocator, VkBuffer
             memory.vma_owned = false;
             return;
         }
-        vmaDestroyBuffer(allocator, buffer, memory.vma_allocation, 0);
+        vmaDestroyBuffer(allocator, buffer, memory.vma_allocation);
         // vmaDestroyBuffer() already unmapped anything we had mapped.
         memory.mapped = nullptr;
         memory.vma_allocation = VK_NULL_HANDLE;
@@ -256,7 +256,7 @@ public:
             if ((type_bits & (1u << i)) == 0) {
                 continue;
             }
-            const VkMemoryPropertyFlags flags = props.memoryTypeProperties[i].propertyFlags;
+            const VkMemoryPropertyFlags flags = props.memoryTypes[i].propertyFlags;
             if ((flags & required) != required) {
                 continue;
             }
@@ -291,17 +291,22 @@ public:
 
         const VmaAllocator allocator = this->allocator();
         if (allocator != VK_NULL_HANDLE) {
-            VmaAllocationInfo info{};
-            // VMA_ALLOCATION_CREATE_HOST_ACCESS_* and VmaMemoryUsage stay at
-            // their defaults on purpose: those enums were renamed between VMA
-            // releases, and the defaults already pick the right block for both
-            // DEVICE_LOCAL and staging allocations.
-            info.allocationSize = size;
-            info.memoryTypeBits = memory_type_bits;
+            // vmaAllocateMemory() takes the buffer's own VkMemoryRequirements, so
+            // the size and the allowed memory types are handed over unchanged.
+            // VmaAllocationCreateInfo stays at its defaults on purpose: VMA_MEMORY_USAGE_*
+            // and VMA_ALLOCATION_CREATE_HOST_ACCESS_* were renamed between VMA releases,
+            // and with memory requirements supplied the defaults already pick the right
+            // block for both DEVICE_LOCAL and staging allocations.
+            VkMemoryRequirements vk_requirements{};
+            vk_requirements.size = size;
+            vk_requirements.alignment = 1;
+            vk_requirements.memoryTypeBits = memory_type_bits;
+            VmaAllocationCreateInfo create_info{};
 
             VmaAllocation allocation = VK_NULL_HANDLE;
-            VkDeviceMemory memory = VK_NULL_HANDLE;
-            if (vmaAllocateMemory(allocator, &info, &allocation, &memory) != VK_SUCCESS) {
+            VmaAllocationInfo info{};
+            if (vmaAllocateMemory(allocator, &vk_requirements, &create_info, &allocation,
+                                  &info) != VK_SUCCESS) {
                 LOGE("vmaAllocateMemory failed for a %llu byte buffer",
                      static_cast<unsigned long long>(size));
                 return false;
@@ -313,7 +318,8 @@ public:
             }
 
             out.vma_allocation = allocation;
-            out.memory = memory;
+            // VMA reports the backing VkDeviceMemory through VmaAllocationInfo::deviceMemory.
+            out.memory = info.deviceMemory;
             out.vma_owned = true;
             out.size = size;
             // VMA chose the memory type, so report what a matching type can
@@ -321,7 +327,7 @@ public:
             const uint32_t type = find_memory_type(memory_type_bits, required, preferred, discouraged);
             const VkPhysicalDeviceMemoryProperties props = memory_properties();
             if (type != UINT32_MAX) {
-                const VkMemoryPropertyFlags flags = props.memoryTypeProperties[type].propertyFlags;
+                const VkMemoryPropertyFlags flags = props.memoryTypes[type].propertyFlags;
                 out.host_visible = (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
                 out.host_coherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
             }
@@ -352,7 +358,7 @@ public:
         }
 
         const VkPhysicalDeviceMemoryProperties props = memory_properties();
-        const VkMemoryPropertyFlags flags = props.memoryTypeProperties[type].propertyFlags;
+        const VkMemoryPropertyFlags flags = props.memoryTypes[type].propertyFlags;
         out.vma_owned = false;
         out.size = size;
         // Record what was granted, not what was asked: a device may hand out
@@ -613,9 +619,7 @@ public:
         const bool submitted = submit_locked([&](VkCommandBuffer command_buffer) {
             record_buffer_barrier(command_buffer, dst);
             VkBufferCopy region{};
-            region.srcBuffer = staging_handle;
             region.srcOffset = copy_offset;
-            region.dstBuffer = dst;
             region.dstOffset = dst_offset;
             region.size = copy_size;
             vkCmdCopyBuffer(command_buffer, staging_handle, dst, 1, &region);
@@ -654,9 +658,7 @@ public:
             return false;
         }
         VkBufferCopy region{};
-        region.srcBuffer = src;
         region.srcOffset = src_offset;
-        region.dstBuffer = dst;
         region.dstOffset = dst_offset;
         region.size = copy_size;
         return submit_locked([&](VkCommandBuffer command_buffer) {

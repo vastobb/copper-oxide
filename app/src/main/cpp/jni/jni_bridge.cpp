@@ -15,6 +15,7 @@
 #include <android/log.h>
 #include <array>
 #include <mutex>
+#include <string>
 #include <memory>
 #include <vector>
 

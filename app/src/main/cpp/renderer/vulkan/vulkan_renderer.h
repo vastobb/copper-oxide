@@ -49,16 +49,6 @@ public:
     bool initialize(const RendererConfig& config) override;
     void shutdown() override;
 
-    BufferManager* getBufferManager() override { return buffer_manager_.get(); }
-    TextureManager* getTextureManager() override { return texture_manager_.get(); }
-    ShaderManager* getShaderManager() override { return shader_manager_.get(); }
-    FramebufferManager* getFramebufferManager() override { return framebuffer_manager_.get(); }
-    StateManager* getStateManager() override { return state_manager_.get(); }
-    CommandBuffer* getCommandBuffer() override { return command_buffer_.get(); }
-    SyncManager* getSyncManager() override { return sync_manager_.get(); }
-    ResourcePool* getResourcePool() override { return resource_pool_.get(); }
-    Profiler* getProfiler() override { return profiler_.get(); }
-
     const RendererConfig& getConfig() const override { return config_; }
     RendererBackend getBackend() const override { return RendererBackend::Vulkan; }
     bool isInitialized() const override { return initialized_; }

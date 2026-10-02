@@ -104,16 +104,33 @@ class RendererConfigTest {
     fun `feature flags use explicit bits rather than ordinals`() {
         // A feature is sent as its bit so that adding one in the middle of the
         // enum cannot re-map every later feature.
-        val bits = RendererFeature.entries.map { it.bit }
-        assertEquals("feature bits must be unique", bits.size, bits.toSet().size)
+        val bits = RendererFeature.entries.associate { it to it.bit }
+
         assertEquals(
             "only NONE may use bit 0, which the native side reads as 'unset'",
             listOf(RendererFeature.NONE),
-            RendererFeature.entries.filter { it.bit == 0 },
+            bits.filterValues { it == 0 }.keys.toList(),
         )
-        bits.filter { it != 0 }.forEach {
-            assertTrue("feature bit $it must be a single bit", it and (it - 1) == 0)
-        }
+        assertEquals(
+            "ALL is the documented 'every feature' sentinel",
+            -1,
+            bits.getValue(RendererFeature.ALL),
+        )
+
+        // Every feature except the two sentinels is a single bit, so adding one
+        // in the middle of the enum cannot re-map the ones after it.
+        bits.filterKeys { it != RendererFeature.NONE && it != RendererFeature.ALL }
+            .forEach { (feature, bit) ->
+                assertTrue("$feature must use a positive bit, was $bit", bit > 0)
+                assertEquals("$feature bit $bit must be a single bit", 0, bit and (bit - 1))
+            }
+
+        assertEquals(
+            "real feature bits must be unique so a query maps back to one feature",
+            bits.size - 2,
+            bits.filterKeys { it != RendererFeature.NONE && it != RendererFeature.ALL }
+                .values.toSet().size,
+        )
     }
 
     @Test
@@ -125,43 +142,65 @@ class RendererConfigTest {
 
     @Test
     fun `buffer usage flags combine and stay within the backend bit width`() {
-        val vertexIndex = CopperOxideRenderer.BufferUsage.of(
+        val combined = CopperOxideRenderer.BufferUsage.of(
             CopperOxideRenderer.BufferUsage.VERTEX,
             CopperOxideRenderer.BufferUsage.TRANSFER_DST,
         )
-        assertTrue("VERTEX bit must survive the combination", vertexIndex and CopperOxideRenderer.BufferUsage.VERTEX != 0)
+        assertTrue(
+            "VERTEX bit must survive the combination",
+            combined and CopperOxideRenderer.BufferUsage.VERTEX.code != 0,
+        )
         assertTrue(
             "TRANSFER_DST bit must survive the combination",
-            vertexIndex and CopperOxideRenderer.BufferUsage.TRANSFER_DST != 0,
+            combined and CopperOxideRenderer.BufferUsage.TRANSFER_DST.code != 0,
         )
-        assertTrue("usage must fit in the 32-bit native field", vertexIndex <= Int.MAX_VALUE)
+        assertEquals("no other bit may be set", 0, combined and CopperOxideRenderer.BufferUsage.INDEX.code)
+        assertTrue("usage must fit in the 32-bit native field", combined <= Int.MAX_VALUE)
     }
 
     @Test
-    fun `texture format constants are distinct and non-zero`() {
-        val formats = listOf(
-            CopperOxideRenderer.TextureFormat.R8,
-            CopperOxideRenderer.TextureFormat.RG8,
-            CopperOxideRenderer.TextureFormat.RGB8,
-            CopperOxideRenderer.TextureFormat.RGBA8,
-            CopperOxideRenderer.TextureFormat.SRGB8_ALPHA8,
-            CopperOxideRenderer.TextureFormat.RGBA16F,
-            CopperOxideRenderer.TextureFormat.R32F,
-            CopperOxideRenderer.TextureFormat.RGBA32F,
-            CopperOxideRenderer.TextureFormat.DEPTH16,
-            CopperOxideRenderer.TextureFormat.DEPTH24_STENCIL8,
-            CopperOxideRenderer.TextureFormat.ASTC_4x4,
-            CopperOxideRenderer.TextureFormat.ETC2_RGBA8,
-        )
-        assertEquals("every texture format must be distinct", formats.size, formats.toSet().size)
-        assertNotEquals("no real format is zero", 0, CopperOxideRenderer.TextureFormat.RGBA8)
+    fun `usage codes are distinct powers of two so they can be combined`() {
+        val buffers = CopperOxideRenderer.BufferUsage.entries.filter { it != CopperOxideRenderer.BufferUsage.NONE }
+        assertEquals("buffer usage codes must be unique", buffers.size, buffers.map { it.code }.toSet().size)
+        buffers.forEach {
+            assertEquals("${it.name} code must be a single bit", 0, it.code and (it.code - 1))
+        }
+
+        val textureUsage =
+            CopperOxideRenderer.TextureUsage.entries.filter { it != CopperOxideRenderer.TextureUsage.NONE }
+        assertEquals("texture usage codes must be unique", textureUsage.size, textureUsage.map { it.code }.toSet().size)
+        textureUsage.forEach {
+            assertEquals("${it.name} code must be a single bit", 0, it.code and (it.code - 1))
+        }
     }
 
     @Test
-    fun `shader stage ordinals match the native ShaderStage enum`() {
-        assertEquals(0, CopperOxideRenderer.ShaderStage.VERTEX)
-        assertEquals(1, CopperOxideRenderer.ShaderStage.FRAGMENT)
-        assertEquals(2, CopperOxideRenderer.ShaderStage.COMPUTE)
+    fun `texture format codes are distinct and non-zero`() {
+        val formats = CopperOxideRenderer.TextureFormat.entries
+            .filter { it != CopperOxideRenderer.TextureFormat.NONE }
+        assertEquals("every texture format must be distinct", formats.size, formats.map { it.code }.toSet().size)
+        formats.forEach { assertNotEquals("${it.name} must have a real code", 0, it.code) }
+        assertEquals(
+            "NONE must be the only zero code, or the native side cannot detect it",
+            0,
+            CopperOxideRenderer.TextureFormat.entries.count { it.code == 0 },
+        )
+    }
+
+    @Test
+    fun `shader stage and index type codes match the native enums`() {
+        // These are passed straight to JNI and cast to the native enums, so the
+        // codes are an ABI and must not be derived from the Kotlin ordinal.
+        assertEquals(0, CopperOxideRenderer.ShaderStage.VERTEX.code)
+        assertEquals(1, CopperOxideRenderer.ShaderStage.FRAGMENT.code)
+        assertEquals(2, CopperOxideRenderer.ShaderStage.COMPUTE.code)
+        assertEquals(0, CopperOxideRenderer.IndexType.UINT16.code)
+        assertEquals(1, CopperOxideRenderer.IndexType.UINT32.code)
+        assertEquals(
+            "stage codes must match the declared order",
+            CopperOxideRenderer.ShaderStage.entries.map { it.code },
+            CopperOxideRenderer.ShaderStage.entries.map { it.ordinal },
+        )
     }
 
     @Test

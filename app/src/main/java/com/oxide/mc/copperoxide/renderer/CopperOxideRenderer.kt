@@ -483,60 +483,77 @@ open class CopperOxideRenderer(
     }
 
     /**
-     * Buffer usage flags. These map to the backend's own constants, which differ
-     * between OpenGL ES and Vulkan; passing the same value works on both.
+     * Buffer usage flags.
+     *
+     * These are bit flags mapped to each backend's own constants. An enum with
+     * an explicit code is used rather than `const val` or an ordinal so that
+     * reordering the entries can never silently change what reaches JNI.
      */
-    object BufferUsage {
-        const val NONE = 0
-        const val VERTEX = 1
-        const val INDEX = 2
-        const val UNIFORM = 4
-        const val STORAGE = 8
-        const val TRANSFER_SRC = 16
-        const val TRANSFER_DST = 32
-        const val INDIRECT = 64
+    enum class BufferUsage(val code: Int) {
+        NONE(0),
+        VERTEX(1),
+        INDEX(2),
+        UNIFORM(4),
+        STORAGE(8),
+        TRANSFER_SRC(16),
+        TRANSFER_DST(32),
+        INDIRECT(64),
+        ;
 
-        fun of(vararg flags: Int): Int = flags.fold(0) { acc, flag -> acc or flag }
+        companion object {
+            /** Bitwise-or of the given flags. */
+            fun of(vararg flags: BufferUsage): Int = flags.fold(0) { acc, flag -> acc or flag.code }
+        }
     }
 
-    /** Texture format constants, matching [BufferUsage] in spirit. */
-    object TextureFormat {
-        const val NONE = 0
-        const val R8 = 1
-        const val RG8 = 2
-        const val RGB8 = 3
-        const val RGBA8 = 4
-        const val SRGB8_ALPHA8 = 5
-        const val RGBA16F = 8
-        const val R32F = 10
-        const val RGBA32F = 13
-        const val DEPTH16 = 16
-        const val DEPTH24_STENCIL8 = 19
-        const val ASTC_4x4 = 24
-        const val ETC2_RGBA8 = 36
+    /**
+     * Texture format codes.
+     *
+     * The values are Copper Oxide's own, not `GLenum` or `VkFormat`, so the same
+     * number means the same thing on both backends.
+     */
+    enum class TextureFormat(val code: Int) {
+        NONE(0),
+        R8(1),
+        RG8(2),
+        RGB8(3),
+        RGBA8(4),
+        SRGB8_ALPHA8(5),
+        RGBA16F(8),
+        R32F(10),
+        RGBA32F(13),
+        DEPTH16(16),
+        DEPTH24_STENCIL8(19),
+        ASTC_4x4(24),
+        ETC2_RGBA8(36),
     }
 
     /** Texture usage flags. */
-    object TextureUsage {
-        const val NONE = 0
-        const val SAMPLED = 1
-        const val COLOR_ATTACHMENT = 2
-        const val DEPTH_ATTACHMENT = 4
-        const val STORAGE = 8
+    enum class TextureUsage(val code: Int) {
+        NONE(0),
+        SAMPLED(1),
+        COLOR_ATTACHMENT(2),
+        DEPTH_ATTACHMENT(4),
+        STORAGE(8),
+        ;
+
+        companion object {
+            fun of(vararg flags: TextureUsage): Int = flags.fold(0) { acc, flag -> acc or flag.code }
+        }
     }
 
     /** Shader stage, matching the native `ShaderStage` enum ordinal. */
-    object ShaderStage {
-        const val VERTEX = 0
-        const val FRAGMENT = 1
-        const val COMPUTE = 2
-        const val GEOMETRY = 3
+    enum class ShaderStage(val code: Int) {
+        VERTEX(0),
+        FRAGMENT(1),
+        COMPUTE(2),
+        GEOMETRY(3),
     }
 
     /** Index width passed to [bindIndexBuffer] and [drawIndexed]. */
-    object IndexType {
-        const val UINT16 = 0
-        const val UINT32 = 1
+    enum class IndexType(val code: Int) {
+        UINT16(0),
+        UINT32(1),
     }
 
     // -----------------------------------------------------------------------
@@ -550,9 +567,9 @@ open class CopperOxideRenderer(
      * backend has no buffer manager, so a caller that forgets to check
      * [isInitialized] degrades to "nothing is drawn" rather than a crash.
      */
-    fun createBuffer(sizeBytes: Long, usage: Int): ResourceHandle {
+    fun createBuffer(sizeBytes: Long, usage: BufferUsage = BufferUsage.VERTEX): ResourceHandle {
         require(sizeBytes > 0) { "sizeBytes must be positive, was $sizeBytes" }
-        return ResourceHandle(nativeCreateBuffer(sizeBytes, usage))
+        return ResourceHandle(nativeCreateBuffer(sizeBytes, usage.code))
     }
 
     fun destroyBuffer(buffer: ResourceHandle) {
@@ -569,12 +586,12 @@ open class CopperOxideRenderer(
     fun createTexture2D(
         width: Int,
         height: Int,
-        format: Int = TextureFormat.RGBA8,
-        usage: Int = TextureUsage.SAMPLED,
+        format: TextureFormat = TextureFormat.RGBA8,
+        usage: Int = TextureUsage.SAMPLED.code,
         mipLevels: Int = 1
     ): ResourceHandle {
         require(width > 0 && height > 0) { "texture extent must be positive" }
-        return ResourceHandle(nativeCreateTexture2D(width, height, format, usage, mipLevels))
+        return ResourceHandle(nativeCreateTexture2D(width, height, format.code, usage, mipLevels))
     }
 
     /** Uploads tightly packed pixels to one mip level of [texture]. */
@@ -595,8 +612,8 @@ open class CopperOxideRenderer(
      * Vulkan backend has no translator wired up yet and reports failure instead
      * of pretending to have produced a module.
      */
-    fun createShader(stage: Int, source: String, defines: Array<String> = emptyArray()): ResourceHandle =
-        ResourceHandle(nativeCreateShader(stage, source, defines))
+    fun createShader(stage: ShaderStage, source: String, defines: Array<String> = emptyArray()): ResourceHandle =
+        ResourceHandle(nativeCreateShader(stage.code, source, defines))
 
     fun destroyShader(shader: ResourceHandle) {
         if (shader.isValid) nativeDestroyShader(shader.value)
@@ -633,8 +650,8 @@ open class CopperOxideRenderer(
         nativeBindVertexBuffers(firstBinding, buffers, offsets)
     }
 
-    fun bindIndexBuffer(buffer: ResourceHandle, indexType: Int = IndexType.UINT16) =
-        nativeBindIndexBuffer(buffer.value, indexType)
+    fun bindIndexBuffer(buffer: ResourceHandle, indexType: IndexType = IndexType.UINT16) =
+        nativeBindIndexBuffer(buffer.value, indexType.code)
 
     fun setViewport(x: Float, y: Float, width: Float, height: Float) =
         nativeSetViewport(x, y, width, height)

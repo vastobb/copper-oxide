@@ -131,11 +131,15 @@ const FormatInfo& format_info_for(VkFormat format) {
 }
 
 // Features the resolved format must offer: this manager only ever creates
-// samplable, uploadable images.
+// samplable, uploadable images. The optimal-tiling bit is deliberately absent: it
+// was renamed when maintenance1 was folded into core and then dropped from
+// VkFormatFeatureFlagBits altogether, so no spelling of it survives in the 1.0 ABI.
+// Nothing is lost - VK_IMAGE_TILING_OPTIMAL is mandatory for every format - and
+// asking for a replacement token would only test a different bit.
 VkFormatFeatureFlags required_features(const FormatInfo& info) {
     if (info.compressed) {
         return VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
-               VK_FORMAT_FEATURE_TRANSFER_DST_BIT | VK_FORMAT_FEATURE_OPTIMAL_TILING_BIT;
+               VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
     }
     return VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 }
@@ -254,14 +258,16 @@ uint64_t byte_size_for(const FormatInfo& info, uint32_t width, uint32_t height, 
     return blocks_x * blocks_y * blocks_z * info.bytes_per_block;
 }
 
-VkImageViewType view_type_for(VkImageType type, bool cube) {
+VkImageViewType view_type_for(VkImageType type, bool cube, uint32_t array_layers) {
     if (type == VK_IMAGE_TYPE_3D) {
         return VK_IMAGE_VIEW_TYPE_3D;
     }
     if (cube) {
         return VK_IMAGE_VIEW_TYPE_CUBE;
     }
-    return (type == VK_IMAGE_TYPE_2D) ? VK_IMAGE_VIEW_TYPE_2D : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    // An array image is VK_IMAGE_TYPE_2D with more than one array layer: there is no
+    // VK_IMAGE_TYPE_2D_ARRAY in the 1.0 ABI, so the view type follows the layers.
+    return array_layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
 }
 
 // Transfer bits are always added: TextureManager::updateTexture() is legal on
@@ -402,7 +408,7 @@ void destroy_image_and_memory(VkDevice device, VmaAllocator allocator, VkImage i
             if (allocator == VK_NULL_HANDLE) {
                 LOGE("cannot destroy a VMA-owned image without an allocator; leaking");
             } else {
-                vmaDestroyImage(allocator, image, memory.vma_allocation, 0);
+                vmaDestroyImage(allocator, image, memory.vma_allocation);
                 memory.mapped = nullptr;
                 memory.vma_allocation = VK_NULL_HANDLE;
                 memory.memory = VK_NULL_HANDLE;
@@ -554,7 +560,7 @@ public:
             if ((type_bits & (1u << i)) == 0) {
                 continue;
             }
-            const VkMemoryPropertyFlags flags = props.memoryTypeProperties[i].propertyFlags;
+            const VkMemoryPropertyFlags flags = props.memoryTypes[i].propertyFlags;
             if ((flags & required) != required) {
                 continue;
             }
@@ -587,15 +593,22 @@ public:
 
         const VmaAllocator allocator = this->allocator();
         if (allocator != VK_NULL_HANDLE) {
-            VmaAllocationInfo info{};
+            // vmaAllocateMemory() takes the size and the acceptable memory types
+            // through VkMemoryRequirements plus a VmaAllocationCreateInfo;
+            // VmaAllocationInfo is an output-only struct and never carries a size.
+            VkMemoryRequirements vma_requirements{};
+            vma_requirements.size = size;
+            vma_requirements.alignment = 1;
+            vma_requirements.memoryTypeBits = memory_type_bits != 0 ? memory_type_bits : ~0u;
+
+            VmaAllocationCreateInfo create_info{};
             // VMA_ALLOCATION_CREATE_HOST_ACCESS_* and VmaMemoryUsage stay at their
             // defaults on purpose: those enums were renamed between VMA releases.
-            info.allocationSize = size;
-            info.memoryTypeBits = memory_type_bits != 0 ? memory_type_bits : ~0u;
+            create_info.memoryTypeBits = vma_requirements.memoryTypeBits;
 
             VmaAllocation allocation = VK_NULL_HANDLE;
-            VkDeviceMemory memory = VK_NULL_HANDLE;
-            if (vmaAllocateMemory(allocator, &info, &allocation, &memory) != VK_SUCCESS) {
+            if (vmaAllocateMemory(allocator, &vma_requirements, &create_info, &allocation,
+                                  nullptr) != VK_SUCCESS) {
                 LOGE("vmaAllocateMemory failed for a %llu byte image",
                      static_cast<unsigned long long>(size));
                 return false;
@@ -605,8 +618,10 @@ public:
                 LOGE("vmaBindImageMemory failed");
                 return false;
             }
+            VmaAllocationInfo allocation_info{};
+            vmaGetAllocationInfo(allocator, allocation, &allocation_info);
             out.vma_allocation = allocation;
-            out.memory = memory;
+            out.memory = allocation_info.deviceMemory;
             out.vma_owned = true;
             out.size = size;
             return true;
@@ -637,7 +652,7 @@ public:
         }
         out.vma_owned = false;
         out.size = size;
-        const VkMemoryPropertyFlags flags = memory_properties().memoryTypeProperties[type].propertyFlags;
+        const VkMemoryPropertyFlags flags = memory_properties().memoryTypes[type].propertyFlags;
         out.host_visible = (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
         out.host_coherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
         return true;
@@ -760,7 +775,7 @@ public:
             VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
         view_info.subresourceRange =
             VkImageSubresourceRange{record.aspect, 0, levels, 0, array_layers};
-        view_info.viewType = view_type_for(type, cube);
+        view_info.viewType = view_type_for(type, cube, array_layers);
         if (vkCreateImageView(device, &view_info, nullptr, &record.view) != VK_SUCCESS) {
             LOGE("vkCreateImageView failed for the primary view");
             destroy_image_and_memory(device, allocator(), image, VK_NULL_HANDLE, VK_NULL_HANDLE,
@@ -861,7 +876,7 @@ public:
             vkDestroyBuffer(device, buffer, nullptr);
             return false;
         }
-        const VkMemoryPropertyFlags flags = memory_properties().memoryTypeProperties[type].propertyFlags;
+        const VkMemoryPropertyFlags flags = memory_properties().memoryTypes[type].propertyFlags;
         block.size = requirements.size;
         block.host_visible = true;
         block.host_coherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
@@ -1016,6 +1031,17 @@ public:
         return wait_for_upload_locked(kUploadWaitTimeoutNs);
     }
 
+    // --- per-region uploads -----------------------------------------------
+    // Validates `region` against the image, stages the bytes and records
+    // UNDEFINED/old -> TRANSFER_DST_OPTIMAL -> shader-read on the transient
+    // command buffer. upload_mutex must already be held, which is why the
+    // multi-layer and mip-chain paths can keep several regions in one lock hold.
+    // It is a member here rather than on VulkanTextureManager because its record
+    // parameter is an Impl type, which the public header cannot name.
+    bool uploadRegion(const Record& record, uint32_t mip_level, uint32_t array_layer, uint32_t x,
+                      uint32_t y, uint32_t z, uint32_t width, uint32_t height, uint32_t depth,
+                      const void* data, uint64_t data_size);
+
     // upload_mutex must be held. Host writes to non-coherent memory are only
     // visible to the device after a flush; coherent memory needs none. Offsets
     // and sizes must be multiples of nonCoherentAtomSize, so the range is rounded
@@ -1052,7 +1078,7 @@ public:
             return;
         }
         VkImageMemoryBarrier barrier{};
-        barrier.sType = VK_IMAGE_MEMORY_BARRIER;
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.srcAccessMask = access_for_layout(old_layout);
         barrier.dstAccessMask = access_for_layout(new_layout);
         barrier.oldLayout = old_layout;
@@ -1263,9 +1289,10 @@ bool VulkanTextureManager::onCreateTextureArray(uint64_t handle, uint32_t width,
                                                 uint32_t usage, uint32_t mip_levels) {
     const bool cube = t_cube_pending;
     t_cube_pending = false;
-    return pImpl->create_image(handle,
-                               array_layers > 1 ? VK_IMAGE_TYPE_2D_ARRAY : VK_IMAGE_TYPE_2D,
-                               width, height, 1, array_layers, format, usage, mip_levels, cube);
+    // A multi-layer array is still VK_IMAGE_TYPE_2D in the 1.0 ABI: the array-ness
+    // lives in VkImageCreateInfo::arrayLayers, not in the image type.
+    return pImpl->create_image(handle, VK_IMAGE_TYPE_2D, width, height, 1, array_layers, format,
+                               usage, mip_levels, cube);
 }
 
 // TextureManager::createTextureCube() drops the cube-ness on the floor: it just
@@ -1341,17 +1368,18 @@ void VulkanTextureManager::onUpdateTexture(uint64_t handle, uint32_t mip_level, 
     }
 
     std::lock_guard upload_lock(pImpl->upload_mutex);
-    uploadRegion(record, mip_level, array_layer, x, y, z, width, height, depth, data, data_size);
+    pImpl->uploadRegion(record, mip_level, array_layer, x, y, z, width, height, depth, data,
+                        data_size);
 }
 
-// pImpl->upload_mutex must be held. Validates the region, stages the bytes and
-// records old -> TRANSFER_DST_OPTIMAL -> shader-read on the transient command
-// buffer. Shared by onUpdateTexture() and by the multi-layer / chain paths, which
-// need several regions inside one lock hold.
-bool VulkanTextureManager::uploadRegion(const Impl::Record& record, uint32_t mip_level,
-                                        uint32_t array_layer, uint32_t x, uint32_t y, uint32_t z,
-                                        uint32_t width, uint32_t height, uint32_t depth,
-                                        const void* data, uint64_t data_size) {
+// upload_mutex must be held. Validates the region, stages the bytes and records
+// old -> TRANSFER_DST_OPTIMAL -> shader-read on the transient command buffer.
+// Shared by onUpdateTexture() and by the multi-layer / chain paths, which need
+// several regions inside one lock hold.
+bool VulkanTextureManager::Impl::uploadRegion(const Record& record, uint32_t mip_level,
+                                             uint32_t array_layer, uint32_t x, uint32_t y,
+                                             uint32_t z, uint32_t width, uint32_t height,
+                                             uint32_t depth, const void* data, uint64_t data_size) {
     if (mip_level >= record.mip_levels) {
         LOGE("upload: mip %u is outside the %u level chain", mip_level, record.mip_levels);
         return false;
@@ -1404,13 +1432,13 @@ bool VulkanTextureManager::uploadRegion(const Impl::Record& record, uint32_t mip
         return false;
     }
 
-    if (!pImpl->wait_for_upload_locked(kUploadWaitTimeoutNs)) {
+    if (!wait_for_upload_locked(kUploadWaitTimeoutNs)) {
         return false;
     }
-    if (!pImpl->ensure_transient_locked(copy_size)) {
+    if (!ensure_transient_locked(copy_size)) {
         return false;
     }
-    uint8_t* const staging = static_cast<uint8_t*>(pImpl->staging_memory.mapped);
+    uint8_t* const staging = static_cast<uint8_t*>(staging_memory.mapped);
     if (staging == nullptr) {
         return false;
     }
@@ -1420,7 +1448,7 @@ bool VulkanTextureManager::uploadRegion(const Impl::Record& record, uint32_t mip
     // linear-tiled staging image and no re-tiling pass, which is both cheaper and
     // the only path every ETC2/ASTC driver is required to support.
     std::memcpy(staging, data, static_cast<size_t>(copy_size));
-    pImpl->flush_staging_locked(copy_size);
+    flush_staging_locked(copy_size);
 
     // UNDEFINED -> TRANSFER_DST_OPTIMAL discards the previous contents, which is
     // what an upload wants; TRANSFER_DST_OPTIMAL -> shader-read makes the result
@@ -1432,10 +1460,9 @@ bool VulkanTextureManager::uploadRegion(const Impl::Record& record, uint32_t mip
     const uint32_t mip_levels = record.mip_levels;
     const uint32_t layers = record.array_layers;
 
-    const bool submitted = pImpl->submit_locked([&](VkCommandBuffer command_buffer) {
-        pImpl->transition_image_locked(command_buffer, image, aspect, old_layout,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, mip_levels, 0,
-                                       layers);
+    const bool submitted = submit_locked([&](VkCommandBuffer command_buffer) {
+        transition_image_locked(command_buffer, image, aspect, old_layout,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, mip_levels, 0, layers);
         VkBufferImageCopy region{};
         region.bufferOffset = 0;
         region.bufferRowLength = 0;
@@ -1447,22 +1474,21 @@ bool VulkanTextureManager::uploadRegion(const Impl::Record& record, uint32_t mip
         region.imageOffset = VkOffset3D{static_cast<int32_t>(x), static_cast<int32_t>(y),
                                         static_cast<int32_t>(z)};
         region.imageExtent = VkExtent3D{width, height, depth};
-        vkCmdCopyBufferToImage(command_buffer, pImpl->staging_buffer, image,
+        vkCmdCopyBufferToImage(command_buffer, staging_buffer, image,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        pImpl->transition_image_locked(command_buffer, image, aspect,
-                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, target, 0, mip_levels,
-                                       0, layers);
+        transition_image_locked(command_buffer, image, aspect, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                target, 0, mip_levels, 0, layers);
     });
 
     if (!submitted) {
         return false;
     }
-    pImpl->uploaded_bytes += copy_size;
-    pImpl->set_layout(record.handle, target);
-    std::lock_guard lock(pImpl->mutex);
-    auto it = pImpl->textures.find(record.handle);
-    if (it != pImpl->textures.end()) {
-        pImpl->stamp_locked(it->second);
+    uploaded_bytes += copy_size;
+    set_layout(record.handle, target);
+    std::lock_guard lock(mutex);
+    auto it = textures.find(record.handle);
+    if (it != textures.end()) {
+        stamp_locked(it->second);
     }
     return true;
 }
@@ -1542,10 +1568,11 @@ void VulkanTextureManager::onCopyTexture(uint64_t src, uint64_t dst, uint32_t sr
         VkImageCopy region{};
         region.srcSubresource = VkImageSubresourceLayers{src_record.aspect, src_mip, src_layer, 1};
         region.srcOffset = VkOffset3D{0, 0, 0};
-        region.srcExtent = src_extent;
         region.dstSubresource = VkImageSubresourceLayers{dst_record.aspect, dst_mip, dst_layer, 1};
         region.dstOffset = VkOffset3D{0, 0, 0};
-        region.dstExtent = dst_extent;
+        // VkImageCopy has a single extent, not one per side: vkCmdCopyImage copies
+        // 1:1, which the equal-extent check above already established.
+        region.extent = dst_extent;
         vkCmdCopyImage(command_buffer, src_record.transfer_view,
                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst_record.transfer_view,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
@@ -1764,8 +1791,8 @@ uint64_t VulkanTextureManager::uploadRawPixels(const void* pixels, uint64_t size
                 // the previous one left behind.
                 record = it->second;
             }
-            if (!uploadRegion(record, 0, layer, 0, 0, 0, width, height, 1,
-                              bytes + static_cast<size_t>(layer_size * layer), layer_size)) {
+            if (!pImpl->uploadRegion(record, 0, layer, 0, 0, 0, width, height, 1,
+                                  bytes + static_cast<size_t>(layer_size * layer), layer_size)) {
                 return 0;
             }
         }

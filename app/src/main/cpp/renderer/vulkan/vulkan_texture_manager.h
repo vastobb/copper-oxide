@@ -191,14 +191,9 @@ protected:
 private:
     class Impl;
 
-    // Validates `region` against the image, stages the bytes and records
-    // UNDEFINED/old -> TRANSFER_DST_OPTIMAL -> shader-read on the transient
-    // command buffer. pImpl->upload_mutex must already be held, which is why the
-    // multi-layer and mip-chain paths can keep several regions in one lock hold.
-    bool uploadRegion(const Impl::Record& record, uint32_t mip_level, uint32_t array_layer,
-                      uint32_t x, uint32_t y, uint32_t z, uint32_t width, uint32_t height,
-                      uint32_t depth, const void* data, uint64_t data_size);
-
+    // The per-region upload helper lives on Impl (it needs Record) and is declared
+    // with the rest of it in the .cpp: naming Impl::Record here would require a
+    // complete Impl, which only the .cpp has.
     std::unique_ptr<Impl> pImpl;
     VulkanRenderer* renderer_ = nullptr;
 };

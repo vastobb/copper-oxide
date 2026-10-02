@@ -168,7 +168,7 @@ class RendererSmokeTest {
     fun resourceCreationDegradesSafelyBeforeInit() {
         val instance = requireNotNull(renderer)
 
-        val buffer = instance.createBuffer(1024, CopperOxideRenderer.BufferUsage.VERTEX)
+        val buffer = instance.createBuffer(1024)
         assertFalse("createBuffer must not succeed before initialize()", buffer.isValid)
         instance.destroyBuffer(buffer)
 
