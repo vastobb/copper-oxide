@@ -1,0 +1,521 @@
+name: CI/CD - Copper Oxide Renderer
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+
+env:
+  GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.parallel=true -Dorg.gradle.configureondemand=true"
+  ANDROID_SDK_ROOT: /opt/android-sdk
+
+jobs:
+  # Lint and static analysis
+  lint:
+    name: Lint & Static Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          ndk-version: r27b
+          cmake-version: '3.22.1'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run ktlint
+        run: ./gradlew ktlintCheck --no-daemon
+
+      - name: Run detekt
+        run: ./gradlew detekt --no-daemon
+
+      - name: Run Android Lint
+        run: ./gradlew lint --no-daemon
+
+      - name: Upload Lint Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-results
+          path: app/build/reports/lint-results*.html
+          retention-days: 7
+
+  # Unit tests
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          ndk-version: r27b
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Run unit tests
+        run: ./gradlew test --no-daemon --stacktrace
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: app/build/reports/tests/
+          retention-days: 7
+
+  # Native build
+  native-build:
+    name: Native Build (C++)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            libvulkan-dev \
+            vulkan-tools \
+            spirv-tools \
+            glslang-tools
+
+      - name: Setup Android NDK
+        uses: android-actions/setup-android@v3
+        with:
+          ndk-version: r27b
+          cmake-version: '3.22.1'
+
+      - name: Configure CMake
+        run: |
+          cd app/src/main/cpp
+          cmake -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=20
+
+      - name: Build native library
+        run: |
+          cd app/src/main/cpp/build
+          ninja -j$(nproc)
+
+      - name: Verify library
+        run: |
+          ls -la app/src/main/cpp/build/libcopper-oxide.so
+          file app/src/main/cpp/build/libcopper-oxide.so
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-lib-arm64
+          path: app/src/main/cpp/build/libcopper-oxide.so
+          retention-days: 7
+
+  # Android build
+  android-build:
+    name: Android Build (APK/AAB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: [lint, unit-tests, native-build]
+    strategy:
+      matrix:
+        build_type: [release, debug]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          ndk-version: r27b
+          cmake-version: '3.22.1'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Download native library
+        uses: actions/download-artifact@v4
+        with:
+          name: native-lib-arm64
+          path: app/src/main/jniLibs/arm64-v8a/
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build APK
+        run: |
+          ./gradlew assemble${{ matrix.build_type == 'release' && 'Release' || 'Debug' }} --no-daemon --stacktrace
+
+      - name: Verify APK
+        run: |
+          APK_PATH=$(find app/build/outputs/apk -name "*.apk" | head -1)
+          echo "APK: $APK_PATH"
+          ls -la "$APK_PATH"
+          unzip -l "$APK_PATH" | head -30
+
+      - name: Build AAB (release only)
+        if: matrix.build_type == 'release'
+        run: |
+          ./gradlew bundleRelease --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.build_type }}
+          path: app/build/outputs/apk/${{ matrix.build_type }}/*.apk
+          retention-days: 30
+
+      - name: Upload AAB
+        if: matrix.build_type == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: aab-release
+          path: app/build/outputs/bundle/release/*.aab
+          retention-days: 30
+
+      - name: Upload mapping file
+        if: matrix.build_type == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mapping-release
+          path: app/build/outputs/mapping/release/mapping.txt
+          retention-days: 30
+
+  # Instrumented tests (emulator)
+  instrumented-tests:
+    name: Instrumented Tests
+    runs-on: macos-latest  # Better emulator performance
+    timeout-minutes: 60
+    needs: [android-build]
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          ndk-version: r27b
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Download debug APK
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-debug
+          path: app/build/outputs/apk/debug/
+
+      - name: Start emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: ./gradlew connectedAndroidTest --no-daemon --stacktrace
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: instrumented-test-results
+          path: app/build/reports/androidTests/
+          retention-days: 7
+
+  # Security scanning
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'Copper Oxide'
+          path: '.'
+          format: 'HTML'
+          out: 'dependency-check-report'
+
+      - name: Upload Dependency Check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: dependency-check-report/
+          retention-days: 7
+
+  # Release
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [android-build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download release APK
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-release
+          path: artifacts/apk/
+
+      - name: Download release AAB
+        uses: actions/download-artifact@v4
+        with:
+          name: aab-release
+          path: artifacts/aab/
+
+      - name: Download mapping file
+        uses: actions/download-artifact@v4
+        with:
+          name: mapping-release
+          path: artifacts/mapping/
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          CHANGELOG=$(git log --pretty=format:"- %s (%an)" $(git describe --tags --abbrev=0 HEAD^)..HEAD)
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: Copper Oxide ${{ steps.version.outputs.VERSION }}
+          body: |
+            ## Changes
+            ${{ steps.changelog.outputs.CHANGELOG }}
+
+            ## Downloads
+            - **APK**: \`copper-oxide-${{ steps.version.outputs.VERSION }}-arm64-v8a.apk\`
+            - **AAB**: \`copper-oxide-${{ steps.version.outputs.VERSION }}-arm64-v8a.aab\`
+
+            ## Installation
+            1. Download the APK for your architecture (ARM64)
+            2. Install on Android device (enable "Install from unknown sources")
+            3. Grant storage permissions for shader/mod cache
+
+            ## Requirements
+            - Android 8.0+ (API 26)
+            - ARM64 device (arm64-v8a)
+            - Vulkan 1.1+ or OpenGL ES 3.0+ support
+
+            ## Renderer Backends
+            - **Vulkan** (preferred): Adreno 600+/700+/800, Mali Valhall/G715
+            - **OpenGL ES 3.2**: Fallback for older devices
+
+          files: |
+            artifacts/apk/*.apk
+            artifacts/aab/*.aab
+            artifacts/mapping/mapping.txt
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          generate_release_notes: false
+
+      - name: Publish to GitHub Packages (AAB)
+        if: false  # Enable when ready to publish to Play Store
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT }}
+          packageName: com.oxide.mc.copperoxide
+          releaseFiles: artifacts/aab/*.aab
+          track: internal
+          status: draft
+
+  # Benchmark
+  benchmark:
+    name: Performance Benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: [android-build]
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 35
+          ndk-version: r27b
+
+      - name: Download release APK
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-release
+          path: app/build/outputs/apk/release/
+
+      - name: Run benchmarks
+        run: |
+          # This would run on a real device or cloud device farm
+          # For now, we'll just verify the APK can be installed
+          echo "Benchmark job - would run on device farm"
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark-results/
+          retention-days: 30
+
+  # Notify
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [lint, unit-tests, native-build, android-build, instrumented-tests, security, release]
+    if: always()
+    steps:
+      - name: Check job statuses
+        run: |
+          echo "All jobs completed"
+          echo "Lint: ${{ needs.lint.result }}"
+          echo "Unit tests: ${{ needs.unit-tests.result }}"
+          echo "Native build: ${{ needs.native-build.result }}"
+          echo "Android build: ${{ needs.android-build.result }}"
+          echo "Instrumented tests: ${{ needs.instrumented-tests.result }}"
+          echo "Security: ${{ needs.security.result }}"
+          echo "Release: ${{ needs.release.result }}"
+
+      - name: Send failure notification
+        if: failure()
+        run: |
+          echo "Build failed - would send notification"
+          # Could integrate with Slack, Discord, Email, etc.
