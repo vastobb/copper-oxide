@@ -17,8 +17,8 @@ GLESCRenderer::~GLESCRenderer() = default;
 bool GLESCRenderer::initialize(const RendererConfig& config) {
     std::lock_guard<std::mutex> lock(frame_mutex_);
 
-    if (!RendererBase::initialize(config)) {
-        return false;
+    if (initialized_) {
+        return true;
     }
 
     config_ = config;
@@ -128,21 +128,6 @@ bool GLESCRenderer::apply_driver_workarounds() {
 bool GLESCRenderer::make_current() {
     if (egl_surface_ == EGL_NO_SURFACE) return false;
     return eglMakeCurrent(egl_display_, egl_surface_, egl_surface_, egl_context_) == EGL_TRUE;
-}
-
-bool GLESCRenderer::beginFrame() {
-    if (!initialized_) return false;
-    return RendererBase::beginFrame();
-}
-
-void GLESCRenderer::endFrame() {
-    if (!initialized_) return;
-    RendererBase::endFrame();
-}
-
-void GLESCRenderer::present() {
-    if (!initialized_) return;
-    RendererBase::present();
 }
 
 bool GLESCRenderer::onBeginFrame() {

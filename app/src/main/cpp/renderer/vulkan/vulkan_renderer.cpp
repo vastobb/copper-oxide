@@ -17,8 +17,8 @@ VulkanRenderer::~VulkanRenderer() = default;
 bool VulkanRenderer::initialize(const RendererConfig& config) {
     std::lock_guard<std::mutex> lock(frame_mutex_);
     
-    if (!RendererBase::initialize(config)) {
-        return false;
+    if (initialized_) {
+        return true;
     }
     
     config_ = config;
@@ -199,21 +199,6 @@ bool VulkanRenderer::create_sync_objects() {
     }
 
     return true;
-}
-
-bool VulkanRenderer::beginFrame() {
-    if (!initialized_) return false;
-    return RendererBase::beginFrame();
-}
-
-void VulkanRenderer::endFrame() {
-    if (!initialized_) return;
-    RendererBase::endFrame();
-}
-
-void VulkanRenderer::present() {
-    if (!initialized_) return;
-    RendererBase::present();
 }
 
 bool VulkanRenderer::onBeginFrame() {

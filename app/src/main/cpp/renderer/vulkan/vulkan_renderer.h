@@ -12,6 +12,7 @@
 #include "profiler.h"
 
 #include <vulkan/vulkan.h>
+#include <vma/vk_mem_alloc.h>  // VMA for memory allocation
 #include <vector>
 #include <unordered_map>
 #include <mutex>
@@ -29,10 +30,6 @@ public:
     // RendererBase interface
     bool initialize(const RendererConfig& config) override;
     void shutdown() override;
-
-    bool beginFrame() override;
-    void endFrame() override;
-    void present() override;
 
     BufferManager* getBufferManager() override { return buffer_manager_.get(); }
     TextureManager* getTextureManager() override { return texture_manager_.get(); }

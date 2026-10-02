@@ -32,10 +32,6 @@ public:
     bool initialize(const RendererConfig& config) override;
     void shutdown() override;
 
-    bool beginFrame() override;
-    void endFrame() override;
-    void present() override;
-
     BufferManager* getBufferManager() override { return buffer_manager_.get(); }
     TextureManager* getTextureManager() override { return texture_manager_.get(); }
     ShaderManager* getShaderManager() override { return shader_manager_.get(); }
