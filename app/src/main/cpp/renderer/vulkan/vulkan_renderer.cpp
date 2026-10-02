@@ -1054,11 +1054,11 @@ void VulkanRenderer::onMemoryPressure(int level) {
     }
     // Caches are trimmed hardest first, so a mild hint does not throw away
     // everything the frame is about to need again.
+    // Only the texture manager has a cache to trim. ShaderManager keeps no cache
+    // the base can evict, and adding one is not warranted before shader
+    // translation exists, so nothing is claimed here.
     if (TextureManager* textures = getTextureManager()) {
         textures->trimCache(level);
-    }
-    if (ShaderManager* shaders = getShaderManager()) {
-        shaders->trimCache(level);
     }
 }
 
