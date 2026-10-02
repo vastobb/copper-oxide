@@ -124,29 +124,43 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeInitialize(
     config.thermalThrottleThreshold = thermalThrottleThreshold;
 
     std::unique_ptr<RendererBase> renderer;
-    
+
+    ANativeWindow* native_window = nullptr;
+    if (surface != nullptr) {
+        native_window = ANativeWindow_fromSurface(env, surface);
+    }
+
     if (config.preferredBackend == RendererBackend::Vulkan || config.preferredBackend == RendererBackend::Auto) {
         renderer = std::make_unique<VulkanRenderer>();
+        if (native_window) {
+            renderer->setNativeWindow(native_window);
+        }
         if (!renderer->initialize(config)) {
             LOGE("Vulkan initialization failed, falling back to GLES");
             renderer = std::make_unique<GLESCRenderer>();
+            if (native_window) {
+                renderer->setNativeWindow(native_window);
+            }
             if (!renderer->initialize(config)) {
                 LOGE("GLES initialization failed");
+                if (native_window) {
+                    ANativeWindow_release(native_window);
+                }
                 return JNI_FALSE;
             }
         }
     } else {
         renderer = std::make_unique<GLESCRenderer>();
+        if (native_window) {
+            renderer->setNativeWindow(native_window);
+        }
         if (!renderer->initialize(config)) {
             LOGE("GLES initialization failed");
+            if (native_window) {
+                ANativeWindow_release(native_window);
+            }
             return JNI_FALSE;
         }
-    }
-
-    ANativeWindow* native_window = ANativeWindow_fromSurface(env, surface);
-    if (native_window) {
-        // Surface will be handled by the renderer
-        ANativeWindow_release(native_window);
     }
 
     setRenderer(std::move(renderer));
@@ -196,8 +210,8 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOnSurfaceCreate
     if (renderer) {
         ANativeWindow* native_window = ANativeWindow_fromSurface(env, surface);
         if (native_window) {
-            // Handle surface creation in renderer
-            ANativeWindow_release(native_window);
+            renderer->setNativeWindow(native_window);
+            renderer->onSurfaceChanged(ANativeWindow_getWidth(native_window), ANativeWindow_getHeight(native_window));
         }
     }
 }

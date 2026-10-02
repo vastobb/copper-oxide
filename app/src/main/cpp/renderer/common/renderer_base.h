@@ -4,6 +4,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <android/native_window.h>
 #include <functional>
 
 namespace copper {
@@ -233,6 +235,7 @@ public:
     // Surface handling
     virtual void onSurfaceChanged(uint32_t width, uint32_t height);
     virtual void onSurfaceDestroyed();
+    virtual void setNativeWindow(void* native_window);
 
     // Memory pressure
     virtual void onMemoryPressure(int level);

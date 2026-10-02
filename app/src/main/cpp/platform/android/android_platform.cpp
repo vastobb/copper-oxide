@@ -58,16 +58,24 @@ bool AndroidPlatform::initialize(JavaVM* jvm, JNIEnv* env, jobject context) {
 }
 
 void AndroidPlatform::shutdown() {
-    if (pImpl->asset_manager) {
-        pImpl->jvm->GetEnv(reinterpret_cast<void**>(&pImpl->jvm), JNI_VERSION_1_6);
-        JNIEnv* env;
-        pImpl->jvm->AttachCurrentThread(&env, nullptr);
-        env->DeleteGlobalRef(pImpl->asset_manager);
-        env->DeleteGlobalRef(pImpl->context);
-        if (pImpl->thermal_manager) {
-            env->DeleteGlobalRef(pImpl->thermal_manager);
+    if (pImpl->context || pImpl->asset_manager || pImpl->thermal_manager) {
+        JNIEnv* env = nullptr;
+        bool did_attach = false;
+        if (pImpl->jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+            pImpl->jvm->AttachCurrentThread(&env, nullptr);
+            did_attach = (env != nullptr);
         }
-        pImpl->jvm->DetachCurrentThread();
+        if (env) {
+            if (pImpl->asset_manager) env->DeleteGlobalRef(pImpl->asset_manager);
+            if (pImpl->thermal_manager) env->DeleteGlobalRef(pImpl->thermal_manager);
+            if (pImpl->context) env->DeleteGlobalRef(pImpl->context);
+        }
+        if (did_attach) {
+            pImpl->jvm->DetachCurrentThread();
+        }
+        pImpl->asset_manager = nullptr;
+        pImpl->thermal_manager = nullptr;
+        pImpl->context = nullptr;
     }
     LOGI("Android platform shutdown");
 }

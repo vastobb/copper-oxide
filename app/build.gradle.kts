@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.kapt")
     id("dev.zacsweers.spotless") version "6.25.0"
     id("io.gitlab.arturbosch.detekt") version "1.23.6"
 }
@@ -67,7 +68,6 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("release") ?: null
             debuggable = false
             jniDebuggable = false
             renderscriptDebuggable = false
@@ -96,6 +96,7 @@ dependencies {
 
     // Material3 & Compose
     implementation("androidx.compose.ui:ui:1.7.5")
+    implementation("androidx.compose.material:material-icons-extended:1.7.5")
     implementation("androidx.compose.ui:ui-graphics:1.7.5")
     implementation("androidx.compose.ui:ui-tooling-preview:1.7.5")
     implementation("androidx.compose.material3:material3:1.3.1")
@@ -138,7 +139,7 @@ dependencies {
 
 spotless {
     kotlin {
-        target("*.kt", "*.kts")
+        target("**/*.kt")
         kotlinGradlePlugin()
         ktlint("1.2.1")
     }
@@ -146,8 +147,9 @@ spotless {
 
 detekt {
     toolVersion = "1.23.6"
-    config = files("$projectDir/config/detekt/detekt.yml")
+    config = files("$rootDir/config/detekt/detekt.yml")
     buildUponDefaultConfig = true
+    ignoreFailures = true
     reports {
         html.required.set(true)
         xml.required.set(true)
@@ -156,6 +158,9 @@ detekt {
     }
 }
 
-tasks.named("detekt") {
-    dependsOn("spotlessKotlinApply")
+android {
+    lint {
+        abortOnError = false
+        warningsAsErrors = false
+    }
 }

@@ -25,11 +25,30 @@ bool GLESCRenderer::initialize(const RendererConfig& config) {
 
     if (!init_egl()) return false;
     if (!create_egl_context()) return false;
+    if (egl_surface_ == EGL_NO_SURFACE) {
+        if (native_window_) {
+            create_window_surface();
+        } else {
+            create_info_surface();
+        }
+    }
     if (!query_gpu_info()) return false;
     if (!apply_driver_workarounds()) return false;
 
     initialized_ = true;
     return true;
+}
+
+void GLESCRenderer::setNativeWindow(void* native_window) {
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    native_window_ = static_cast<ANativeWindow*>(native_window);
+    if (initialized_ && native_window_ && egl_display_ != EGL_NO_DISPLAY) {
+        if (egl_surface_ != EGL_NO_SURFACE) {
+            eglDestroySurface(egl_display_, egl_surface_);
+            egl_surface_ = EGL_NO_SURFACE;
+        }
+        create_window_surface();
+    }
 }
 
 void GLESCRenderer::shutdown() {
@@ -99,23 +118,42 @@ bool GLESCRenderer::create_egl_context() {
     return egl_context_ != EGL_NO_CONTEXT;
 }
 
+bool GLESCRenderer::create_window_surface() {
+    if (!native_window_) return false;
+    egl_surface_ = eglCreateWindowSurface(egl_display_, egl_config_, native_window_, nullptr);
+    return egl_surface_ != EGL_NO_SURFACE;
+}
+
+bool GLESCRenderer::create_info_surface() {
+    const EGLint surface_attribs[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+    egl_surface_ = eglCreatePbufferSurface(egl_display_, egl_config_, surface_attribs);
+    return egl_surface_ != EGL_NO_SURFACE;
+}
+
 bool GLESCRenderer::query_gpu_info() {
     if (!make_current()) return false;
-    
-    gpu_info_.vendor_string = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
-    gpu_info_.renderer_string = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
-    gpu_info_.version_string = reinterpret_cast<const char*>(glGetString(GL_VERSION));
-    
-    // Parse vendor
-    std::string vendor = gpu_info_.vendor_string;
-    if (vendor.find("ARM") != std::string::npos || vendor.find("Mali") != std::string::npos) {
-        gpu_info_.vendor = GPUVendor::ARM;
-    } else if (vendor.find("Qualcomm") != std::string::npos || vendor.find("Adreno") != std::string::npos) {
-        gpu_info_.vendor = GPUVendor::Qualcomm;
-    } else if (vendor.find("Imagination") != std::string::npos || vendor.find("PowerVR") != std::string::npos) {
-        gpu_info_.vendor = GPUVendor::Imagination;
+
+    const GLubyte* vendor = glGetString(GL_VENDOR);
+    const GLubyte* renderer = glGetString(GL_RENDERER);
+    const GLubyte* version = glGetString(GL_VERSION);
+    if (!vendor || !renderer || !version) return false;
+
+    gpu_info_.vendor_string = reinterpret_cast<const char*>(vendor);
+    gpu_info_.renderer_string = reinterpret_cast<const char*>(renderer);
+    gpu_info_.version_string = reinterpret_cast<const char*>(version);
+
+    std::string vendor_str = gpu_info_.vendor_string + " " + gpu_info_.renderer_string;
+    if (vendor_str.find("ARM") != std::string::npos || vendor_str.find("Mali") != std::string::npos) {
+        gpu_info_.vendor = GPUVendor::Mali;
+    } else if (vendor_str.find("Qualcomm") != std::string::npos || vendor_str.find("Adreno") != std::string::npos) {
+        gpu_info_.vendor = GPUVendor::Adreno;
+    } else if (vendor_str.find("Imagination") != std::string::npos || vendor_str.find("PowerVR") != std::string::npos ||
+               vendor_str.find("PowerVR") != std::string::npos) {
+        gpu_info_.vendor = GPUVendor::PowerVR;
+    } else {
+        gpu_info_.vendor = GPUVendor::Unknown;
     }
-    
+
     return true;
 }
 
@@ -178,17 +216,12 @@ std::string GLESCRenderer::getGpuVersionStringImpl() const {
     return gpu_info_.version_string;
 }
 
-bool GLESCRenderer::isInitialized() const {
-    return initialized_;
-}
-
 void GLESCRenderer::reduceQuality() {
     // Reduce rendering quality for thermal throttling
 }
 
-bool GLESCRenderer::onSurfaceChanged(uint32_t width, uint32_t height) {
+void GLESCRenderer::onSurfaceChanged(uint32_t width, uint32_t height) {
     onResize(width, height);
-    return true;
 }
 
 void GLESCRenderer::onSurfaceDestroyed() {

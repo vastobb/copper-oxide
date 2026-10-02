@@ -136,10 +136,14 @@ void RendererBase::onSurfaceChanged(uint32_t width, uint32_t height) {
 void RendererBase::onSurfaceDestroyed() {
     std::lock_guard<std::mutex> lock(pImpl->mutex);
     pImpl->frameActive = false;
-    
+
     if (pImpl->resourcePool) {
         pImpl->resourcePool->releaseAll();
     }
+}
+
+void RendererBase::setNativeWindow(void* /*native_window*/) {
+    // Backends that own a native window should override this.
 }
 
 void RendererBase::onMemoryPressure(int level) {

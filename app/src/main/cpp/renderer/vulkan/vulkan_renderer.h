@@ -11,8 +11,13 @@
 #include "resource_pool.h"
 #include "profiler.h"
 
+#ifndef VK_USE_PLATFORM_ANDROID_KHR
+#define VK_USE_PLATFORM_ANDROID_KHR
+#endif
 #include <vulkan/vulkan.h>
+#include <vulkan/vulkan_android.h>
 #include <vma/vk_mem_alloc.h>  // VMA for memory allocation
+#include <android/native_window.h>
 #include <vector>
 #include <unordered_map>
 #include <mutex>
@@ -69,6 +74,7 @@ public:
     bool isExtensionSupported(const std::string& extension) const override;
 
     void waitIdle() override;
+    void setNativeWindow(void* native_window) override;
 
     // Backend-specific virtual methods (must implement)
     bool detectGPU() override;
@@ -101,6 +107,7 @@ private:
     // Surface & swapchain
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
+    ANativeWindow* native_window_ = nullptr;
     std::vector<VkImage> swapchain_images_;
     std::vector<VkImageView> swapchain_image_views_;
     VkFormat swapchain_format_ = VK_FORMAT_B8G8R8A8_SRGB;
@@ -155,7 +162,7 @@ private:
     bool create_instance();
     bool select_physical_device();
     bool create_logical_device();
-    bool create_surface(void* window_handle);
+    bool create_surface();
     bool create_swapchain();
     void destroy_swapchain();
     bool create_sync_objects();

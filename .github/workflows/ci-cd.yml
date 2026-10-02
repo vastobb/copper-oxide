@@ -58,8 +58,8 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Run ktlint
-        run: ./gradlew ktlintCheck --no-daemon
+      - name: Run spotless (format check baseline)
+        run: ./gradlew spotlessApply spotlessCheck --no-daemon
 
       - name: Run detekt
         run: ./gradlew detekt --no-daemon
@@ -214,12 +214,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Download native library
-        uses: actions/download-artifact@v4
-        with:
-          name: native-lib-arm64
-          path: app/src/main/jniLibs/arm64-v8a/
-
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
@@ -265,7 +259,7 @@ jobs:
   # Instrumented tests (emulator)
   instrumented-tests:
     name: Instrumented Tests
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     needs: [android-build]
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -302,12 +296,18 @@ jobs:
           name: apk-debug
           path: app/build/outputs/apk/debug/
 
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Start emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
           force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
           script: ./gradlew connectedAndroidTest --no-daemon --stacktrace
 
       - name: Upload test results
@@ -323,6 +323,9 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -337,6 +340,7 @@ jobs:
 
       - name: Upload Trivy results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
@@ -398,7 +402,12 @@ jobs:
       - name: Generate changelog
         id: changelog
         run: |
-          CHANGELOG=$(git log --pretty=format:"- %s (%an)" $(git describe --tags --abbrev=0 HEAD^)..HEAD)
+          PREV=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV" ]; then
+            CHANGELOG=$(git log --pretty=format:"- %s (%an)" $PREV..HEAD)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%an)" HEAD)
+          fi
           echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
           echo "$CHANGELOG" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT

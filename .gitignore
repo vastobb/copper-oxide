@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+build/
+**/build/
+app/.cxx/
+app/src/main/jniLibs/
+local.properties
+
+# Android
+*.apk
+*.aab
+*.ap_
+*.idsig
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Native
+app/src/main/cpp/build/
+_deps/

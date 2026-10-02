@@ -79,10 +79,10 @@ class CopperOxideRenderer(
         }
 
         this.surface = surface
-        val surfaceHolder = surfaceHolder ?: return false
+        // native surface is passed straight through
 
         val result = nativeInitialize(
-            surfaceHolder,
+            surface,
             config.preferredBackend.ordinal,
             config.enableValidation,
             config.enableDebugMarkers,

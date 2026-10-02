@@ -4,6 +4,9 @@
 #include <string>
 #include <memory>
 #include <functional>
+#include <vector>
+#include <jni.h>
+#include <android/native_window.h>
 
 namespace copper {
 

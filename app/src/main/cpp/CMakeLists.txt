@@ -39,6 +39,14 @@ find_library(EGL-lib EGL)
 find_library(GLESv3-lib GLESv3)
 find_library(vulkan-lib vulkan)
 
+# Vulkan Memory Allocator (official GPUOpen source, fetched at configure time)
+include(FetchContent)
+FetchContent_Declare(
+    vma
+    URL https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/refs/tags/v3.3.0.tar.gz
+)
+FetchContent_MakeAvailable(vma)
+
 # Copper Oxide Renderer Library
 add_library(copper-oxide SHARED
     # Common renderer
@@ -57,6 +65,7 @@ add_library(copper-oxide SHARED
 
     # Vulkan backend
     renderer/vulkan/vulkan_renderer.cpp
+    renderer/vulkan/vma_impl.cpp
 
     # OpenGL ES backend
     renderer/gles/gles_renderer.cpp
@@ -67,6 +76,8 @@ add_library(copper-oxide SHARED
     # JNI Bridge
     jni/jni_bridge.cpp
 )
+
+target_include_directories(copper-oxide PRIVATE ${vma_SOURCE_DIR}/include)
 
 target_link_libraries(copper-oxide
     ${log-lib}

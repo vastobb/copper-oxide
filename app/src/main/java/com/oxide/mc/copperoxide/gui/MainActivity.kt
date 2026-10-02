@@ -3,19 +3,68 @@ package com.oxide.mc.copperoxide.gui
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Architecture
+import androidx.compose.material.icons.filled.Badge
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MonitorHeart
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.TrendingDown
+import androidx.compose.material.icons.filled.TrendingUp
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material3.BottomNavigation
+import androidx.compose.material3.BottomNavigationItem
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import com.oxide.mc.copperoxide.renderer.CopperOxideRenderer
 import com.oxide.mc.copperoxide.renderer.FrameStats
 import com.oxide.mc.copperoxide.renderer.GpuInfo
-import com.oxide.mc.copperoxide.renderer.RenderConfig
 import com.oxide.mc.copperoxide.renderer.RendererBackend
-import com.oxide.mc.copperoxide.ui.theme.CopperOxideTheme
+import com.oxide.mc.copperoxide.renderer.RendererFeature
 import com.oxide.mc.copperoxide.ui.theme.ColorPalette
+import com.oxide.mc.copperoxide.ui.theme.CopperOxideTheme
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -220,7 +269,6 @@ fun GpuInfoCard(gpuInfo: GpuInfo) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,
-            horizontalGap = 16.dp
         ) {
             InfoChip(
                 icon = Icons.Default.Badge,
@@ -317,7 +365,7 @@ fun RendererBackendIndicator(renderer: CopperOxideRenderer) {
     Box(
         modifier = Modifier
             .padding(horizontal = 12.dp, vertical = 6.dp)
-            .background(MaterialTheme.colorScheme.primaryContainer, CornerRadius(16.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(16.dp))
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
@@ -348,7 +396,7 @@ fun StatusIndicator(
         modifier = Modifier
             .weight(1f)
             .padding(12.dp)
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest, CornerRadius(12.dp)),
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(12.dp)),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Icon(icon, tint = color, contentDescription = null)
@@ -438,7 +486,7 @@ fun QuickStatItem(
         modifier = Modifier
             .weight(1f)
             .padding(12.dp)
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest, CornerRadius(12.dp)),
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(12.dp)),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Row(horizontalArrangement = Arrangement.Center) {
@@ -493,7 +541,7 @@ fun FeatureRow(feature: FeatureItem, supported: Boolean) {
             .padding(horizontal = 16.dp, vertical = 8.dp)
             .background(
                 if (supported) ColorPalette.Success.copy(alpha = 0.1f) else ColorPalette.Error.copy(alpha = 0.1f),
-                CornerRadius(8.dp)
+                RoundedCornerShape(8.dp)
             ),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
@@ -503,7 +551,7 @@ fun FeatureRow(feature: FeatureItem, supported: Boolean) {
             style = MaterialTheme.typography.bodyMedium,
             color = if (supported) ColorPalette.Success else MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Row(horizontalArrangement = Arrangement.Center, horizontalGap = 8.dp) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(
                 if (supported) Icons.Default.CheckCircle else Icons.Default.Cancel,
                 tint = if (supported) ColorPalette.Success else ColorPalette.Error,
@@ -588,7 +636,7 @@ fun PlaceholderCard(message: String) {
             .fillMaxWidth()
             .padding(16.dp)
             .height(120.dp)
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest, CornerRadius(12.dp)),
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(12.dp)),
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -626,7 +674,7 @@ fun InfoChip(icon: androidx.compose.ui.graphics.vector.ImageVector, label: Strin
     Row(
         modifier = Modifier
             .padding(horizontal = 12.dp, vertical = 6.dp)
-            .background(color.copy(alpha = 0.15f), CornerRadius(16.dp)),
+            .background(color.copy(alpha = 0.15f), RoundedCornerShape(16.dp)),
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Icon(icon, tint = color, contentDescription = null)

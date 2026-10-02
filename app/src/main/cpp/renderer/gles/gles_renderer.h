@@ -14,6 +14,7 @@
 #include <GLES3/gl32.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <android/native_window.h>
 #include <vector>
 #include <unordered_map>
 #include <mutex>
@@ -70,6 +71,7 @@ public:
     bool isExtensionSupported(const std::string& extension) const override;
 
     void waitIdle() override;
+    void setNativeWindow(void* native_window) override;
 
     // Backend-specific virtual methods (must implement)
     bool detectGPU() override;
@@ -150,10 +152,12 @@ private:
     // Private methods
     bool init_egl();
     bool create_egl_context();
-    void query_gpu_info();
+    bool create_window_surface();
+    bool create_info_surface();
+    bool query_gpu_info();
     void query_limits();
     void query_extensions();
-    void apply_driver_workarounds();
+    bool apply_driver_workarounds();
     void setup_debug_output();
 
     // Frame management
