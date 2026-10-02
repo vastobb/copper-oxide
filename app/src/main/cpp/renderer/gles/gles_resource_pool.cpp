@@ -16,16 +16,16 @@ namespace copper {
 GLESCResourcePool::GLESCResourcePool() = default;
 GLESCResourcePool::~GLESCResourcePool() = default;
 
-bool GLESCResourcePool::initialize(RendererBase* renderer) {
-    setRenderer(renderer);
+bool GLESCResourcePool::initialize(RendererBase* renderer_base) {
+    setRenderer(renderer_base);
     // The base picks up bufferPoolSizeMb / enableResourcePooling from the
     // renderer config; those come from the base implementation, not from here.
-    return ResourcePool::initialize(renderer);
+    return ResourcePool::initialize(renderer_base);
 }
 
-void GLESCResourcePool::setRenderer(RendererBase* renderer) {
+void GLESCResourcePool::setRenderer(RendererBase* renderer_base) {
     std::lock_guard<std::mutex> lock(mutex_);
-    renderer_ = renderer;
+    renderer_ = renderer_base;
 }
 
 RendererBase* GLESCResourcePool::renderer() const {
@@ -127,18 +127,20 @@ bool GLESCResourcePool::onAllocateBuffer(uint64_t handle, uint64_t size,
                                          uint32_t usage, uint32_t memory_flags) {
     // `handle` is the pool handle the base is about to publish; the backend
     // handle comes back from BufferManager and is a different number.
-    RendererBase* renderer = renderer();
-    if (renderer == nullptr) {
+    // Named renderer_base: a local called `renderer` would shadow the
+    // renderer() accessor on the right-hand side of its own initialiser.
+    RendererBase* renderer_base = renderer();
+    if (renderer_base == nullptr) {
         noteAllocationFailure();
         LOGE("buffer allocation refused: pool handle %llu has no renderer "
              "(call setRenderer()/initialize() before allocating)",
              static_cast<unsigned long long>(handle));
         return false;
     }
-    BufferManager* buffers = renderer->getBufferManager();
+    BufferManager* buffers = renderer_base->getBufferManager();
     if (buffers == nullptr) {
         noteAllocationFailure();
-        LOGE("buffer allocation refused: renderer exposes no BufferManager");
+        LOGE("buffer allocation refused: the renderer exposes no BufferManager");
         return false;
     }
 
@@ -165,18 +167,20 @@ bool GLESCResourcePool::onAllocateBuffer(uint64_t handle, uint64_t size,
 bool GLESCResourcePool::onAllocateTexture(uint64_t handle, uint32_t width,
                                           uint32_t height, uint32_t format,
                                           uint32_t usage, uint32_t mip_levels) {
-    RendererBase* renderer = renderer();
-    if (renderer == nullptr) {
+    // Named renderer_base: a local called `renderer` would shadow the
+    // renderer() accessor on the right-hand side of its own initialiser.
+    RendererBase* renderer_base = renderer();
+    if (renderer_base == nullptr) {
         noteAllocationFailure();
         LOGE("texture allocation refused: pool handle %llu has no renderer "
              "(call setRenderer()/initialize() before allocating)",
              static_cast<unsigned long long>(handle));
         return false;
     }
-    TextureManager* textures = renderer->getTextureManager();
+    TextureManager* textures = renderer_base->getTextureManager();
     if (textures == nullptr) {
         noteAllocationFailure();
-        LOGE("texture allocation refused: renderer exposes no TextureManager");
+        LOGE("texture allocation refused: the renderer exposes no TextureManager");
         return false;
     }
 
@@ -216,16 +220,18 @@ void GLESCResourcePool::onFree(uint64_t handle) {
         mapping = it->second;
     }
 
-    RendererBase* renderer = renderer();
-    if (renderer == nullptr) {
-        LOGW("onFree(%llu): no renderer, leaking backend handle %llu",
+    // Named renderer_base: a local called `renderer` would shadow the
+    // renderer() accessor on the right-hand side of its own initialiser.
+    RendererBase* renderer_base = renderer();
+    if (renderer_base == nullptr) {
+        LOGW("onFree(%llu): no renderer_base, leaking backend handle %llu",
              static_cast<unsigned long long>(handle),
              static_cast<unsigned long long>(mapping.backend_handle));
         return;
     }
 
     if (mapping.type == ResourceType::Texture) {
-        TextureManager* textures = renderer->getTextureManager();
+        TextureManager* textures = renderer_base->getTextureManager();
         if (textures == nullptr) {
             LOGW("onFree(%llu): no TextureManager, leaking texture %llu",
                  static_cast<unsigned long long>(handle),
@@ -234,7 +240,7 @@ void GLESCResourcePool::onFree(uint64_t handle) {
         }
         textures->destroyTexture(mapping.backend_handle);
     } else {
-        BufferManager* buffers = renderer->getBufferManager();
+        BufferManager* buffers = renderer_base->getBufferManager();
         if (buffers == nullptr) {
             LOGW("onFree(%llu): no BufferManager, leaking buffer %llu",
                  static_cast<unsigned long long>(handle),

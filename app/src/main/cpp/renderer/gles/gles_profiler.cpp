@@ -208,21 +208,24 @@ void GLESCProfiler::pollPreviousQueryLocked(size_t current_slot) {
 
     // Non-blocking poll. Reading GL_QUERY_RESULT directly would wait for the
     // query, which is the stall this class exists to avoid.
-    GLint available = 0;
-    glGetQueryObjectiv(query, GL_QUERY_RESULT_AVAILABLE, &available);
+    // glGetQueryObjecti64v is the ES 3.0 core entry point; the i/u variants are
+    // only declared by extension headers, and the availability flag is a boolean
+    // that the 64-bit form accepts without loss.
+    GLint64 available = 0;
+    glGetQueryObjecti64v(query, GL_QUERY_RESULT_AVAILABLE, &available);
     if (available == 0) {
         return;
     }
 
-    GLint elapsed_ns = 0;
-    glGetQueryObjectiv(query, GL_QUERY_RESULT, &elapsed_ns);
+    GLint64 elapsed_ns = 0;
+    glGetQueryObjecti64v(query, GL_QUERY_RESULT, &elapsed_ns);
     last_gl_error_ = glGetError();
     // GL_TIME_ELAPSED (unlike GL_TIMESTAMP_EXT) is defined to report the elapsed
     // time, so no disjoint-availability check is needed here; a driver that
     // cannot measure reports 0, which lastGpuTimeValid() still marks as a real
     // (zero) measurement.
     last_gpu_time_ms_ =
-            static_cast<double>(static_cast<uint32_t>(elapsed_ns)) /
+            static_cast<double>(static_cast<uint64_t>(elapsed_ns)) /
             static_cast<double>(k_nanos_per_milli);
     last_gpu_time_valid_ = true;
     query_pending_ = false;
