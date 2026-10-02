@@ -40,13 +40,10 @@ jobs:
           cache: 'gradle'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          api-level: 35
-          ndk-version: r27b
-          cmake-version: '3.22.1'
-          cache: true
-          disabled-licenses: true
+          packages: 'platforms;android-35 build-tools;35.0.0 cmake;3.22.1 ndk;27.2.12479018'
+          accept-android-sdk-licenses: true
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -95,12 +92,10 @@ jobs:
           cache: 'gradle'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          api-level: 35
-          ndk-version: r27b
-          cache: true
-          disabled-licenses: true
+          packages: 'platforms;android-35 build-tools;35.0.0 cmake;3.22.1 ndk;27.2.12479018'
+          accept-android-sdk-licenses: true
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -149,12 +144,10 @@ jobs:
             glslang-tools
 
       - name: Setup Android NDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          ndk-version: r27b
-          cmake-version: '3.22.1'
-          cache: true
-          disabled-licenses: true
+          packages: 'ndk;27.2.12479018 cmake;3.22.1'
+          accept-android-sdk-licenses: true
 
       - name: Configure CMake
         run: |
@@ -206,13 +199,10 @@ jobs:
           cache: 'gradle'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          api-level: 35
-          ndk-version: r27b
-          cmake-version: '3.22.1'
-          cache: true
-          disabled-licenses: true
+          packages: 'platforms;android-35 build-tools;35.0.0 cmake;3.22.1 ndk;27.2.12479018'
+          accept-android-sdk-licenses: true
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -291,12 +281,10 @@ jobs:
           cache: 'gradle'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          api-level: 35
-          ndk-version: r27b
-          cache: true
-          disabled-licenses: true
+          packages: 'platforms;android-35 build-tools;35.0.0 cmake;3.22.1 ndk;27.2.12479018'
+          accept-android-sdk-licenses: true
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -479,12 +467,10 @@ jobs:
           cache: 'gradle'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
-          api-level: 35
-          ndk-version: r27b
-          cache: true
-          disabled-licenses: true
+          packages: 'platforms;android-35 build-tools;35.0.0 cmake;3.22.1 ndk;27.2.12479018'
+          accept-android-sdk-licenses: true
 
       - name: Download release APK
         uses: actions/download-artifact@v4
