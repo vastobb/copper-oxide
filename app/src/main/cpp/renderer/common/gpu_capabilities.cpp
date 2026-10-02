@@ -9,6 +9,8 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
+#include <cctype>
+#include <cstring>
 
 namespace copper {
 
@@ -16,6 +18,13 @@ GPUCapabilities::GPUCapabilities() = default;
 GPUCapabilities::~GPUCapabilities() = default;
 
 bool GPUCapabilities::detect() {
+    // Idempotent: a second detection must not duplicate state.
+    supported_extensions_.clear();
+    driver_bugs_.clear();
+    supported_features_ = RendererFeature::None;
+    vendor_ = GPUVendor::Unknown;
+    architecture_ = GPUArchitecture::Unknown;
+
     // Try Vulkan first
     queryVulkanProperties();
     
@@ -25,7 +34,7 @@ bool GPUCapabilities::detect() {
     }
     
     // Apply GPU-specific workarounds and optimizations
-    applyWorkarounds(RendererConfig()); // Dummy config to trigger optimization config setup
+    optimization_config_ = buildOptimizationConfig();
     
     return vendor_ != GPUVendor::Unknown;
 }
@@ -35,48 +44,61 @@ void GPUCapabilities::applyWorkarounds(const RendererConfig& config) const {
     // For now, just set optimization config based on vendor/architecture
 }
 
-GPUCapabilities::GPUOptimizationConfig GPUCapabilities::getOptimizationConfig() const {
+void GPUCapabilities::setDetectedInfo(GPUVendor vendor, GPUArchitecture arch,
+                                       const std::vector<std::string>& extensions,
+                                       RendererFeature features) {
+    vendor_ = vendor;
+    architecture_ = arch;
+    supported_extensions_ = extensions;
+    supported_features_ = features;
+    optimization_config_ = buildOptimizationConfig();
+}
+
+GPUCapabilities::GPUOptimizationConfig GPUCapabilities::buildOptimizationConfig() const {
     GPUOptimizationConfig opt;
-    
+
+    // Architecture comparisons must be explicit: the enum values are sparse
+    // (1-3, 10-13, 20-22), so ordinal comparison gives wrong answers across
+    // vendor families.
     switch (vendor_) {
         case GPUVendor::Adreno: {
+            const bool is_700_or_newer = architecture_ == GPUArchitecture::Adreno_700 ||
+                                         architecture_ == GPUArchitecture::Adreno_800;
             opt.use_ubwc = true;
             opt.use_image_compression = true;
             opt.prefer_compute_shaders = true;
             opt.prefer_indirect_draw = true;
             opt.use_descriptor_indexing = true;
-            opt.use_timeline_semaphores = (architecture_ >= GPUArchitecture::Adreno_700);
-            opt.use_dynamic_rendering = (architecture_ >= GPUArchitecture::Adreno_700);
+            opt.use_timeline_semaphores = is_700_or_newer;
+            opt.use_dynamic_rendering = is_700_or_newer;
             opt.max_push_constants = 256;
             opt.optimal_workgroup_size = 64;
-            
-            if (architecture_ == GPUArchitecture::Adreno_800) {
-                opt.use_subpass_merge = true;
-            }
+            opt.use_subpass_merge = architecture_ == GPUArchitecture::Adreno_800;
             break;
         }
         case GPUVendor::Mali: {
+            const bool is_valhall_or_newer = architecture_ == GPUArchitecture::Mali_Valhall ||
+                                             architecture_ == GPUArchitecture::Mali_G715;
             opt.use_afbc = true;
             opt.use_tile_memory = true;
             opt.use_subpass_merge = true;
             opt.prefer_compute_shaders = true;
             opt.use_descriptor_indexing = true;
-            opt.use_timeline_semaphores = (architecture_ >= GPUArchitecture::Mali_Valhall);
-            opt.use_dynamic_rendering = (architecture_ >= GPUArchitecture::Mali_Valhall);
+            opt.use_timeline_semaphores = is_valhall_or_newer;
+            opt.use_dynamic_rendering = is_valhall_or_newer;
             opt.max_push_constants = 256;
-            opt.optimal_workgroup_size = 64;
-            
-            if (architecture_ == GPUArchitecture::Mali_G715 || architecture_ == GPUArchitecture::Mali_Valhall) {
-                opt.use_image_compression = true;
-            }
+            // Mali executes 4-wide on Bifrost and 8-wide from Valhall onwards.
+            opt.optimal_workgroup_size = is_valhall_or_newer ? 64 : 32;
+            opt.use_image_compression = is_valhall_or_newer;
             break;
         }
         case GPUVendor::PowerVR: {
+            const bool is_furian = architecture_ == GPUArchitecture::PowerVR_Furian;
             opt.use_image_compression = true;
             opt.prefer_compute_shaders = true;
             opt.use_descriptor_indexing = true;
-            opt.use_timeline_semaphores = (architecture_ >= GPUArchitecture::PowerVR_Furian);
-            opt.use_dynamic_rendering = (architecture_ >= GPUArchitecture::PowerVR_Furian);
+            opt.use_timeline_semaphores = is_furian;
+            opt.use_dynamic_rendering = is_furian;
             opt.max_push_constants = 256;
             opt.optimal_workgroup_size = 32;
             break;
@@ -87,8 +109,26 @@ GPUCapabilities::GPUOptimizationConfig GPUCapabilities::getOptimizationConfig() 
             break;
         }
     }
-    
+
+    // Never recommend a capability the device did not actually report.
+    const auto has = [&](RendererFeature feature) {
+        return (static_cast<uint32_t>(supported_features_) & static_cast<uint32_t>(feature)) != 0;
+    };
+    if (!has(RendererFeature::DescriptorIndexing)) {
+        opt.use_descriptor_indexing = false;
+    }
+    if (!has(RendererFeature::TimelineSemaphore)) {
+        opt.use_timeline_semaphores = false;
+    }
+    if (!has(RendererFeature::DynamicRendering)) {
+        opt.use_dynamic_rendering = false;
+    }
+
     return opt;
+}
+
+GPUCapabilities::GPUOptimizationConfig GPUCapabilities::getOptimizationConfig() const {
+    return buildOptimizationConfig();
 }
 
 bool GPUCapabilities::detectAdreno() {
@@ -116,7 +156,17 @@ void GPUCapabilities::queryVulkanProperties() {
     VkApplicationInfo app_info{};
     app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app_info.pApplicationName = "Copper Oxide GPU Detect";
-    app_info.apiVersion = VK_API_VERSION_1_3;
+    // Probe the loader version instead of demanding 1.3: Android drivers on
+    // older GPUs expose only 1.0/1.1 and would fail with
+    // VK_ERROR_INCOMPATIBLE_DRIVER.
+    uint32_t loader_version = VK_API_VERSION_1_0;
+    auto enumerate_instance_version = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
+        vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion"));
+    if (enumerate_instance_version != nullptr &&
+        enumerate_instance_version(&loader_version) != VK_SUCCESS) {
+        loader_version = VK_API_VERSION_1_0;
+    }
+    app_info.apiVersion = loader_version < VK_API_VERSION_1_1 ? loader_version : VK_API_VERSION_1_1;
     
     VkInstanceCreateInfo create_info{};
     create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -154,7 +204,7 @@ void GPUCapabilities::queryVulkanProperties() {
             
             // Determine architecture from device name
             std::string device_name = props.deviceName;
-            std::transform(device_name.begin(), device_name.end(), device_name.begin(), ::tolower);
+            std::transform(device_name.begin(), device_name.end(), device_name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             
             if (vendor_ == GPUVendor::Adreno) {
                 if (device_name.find("830") != std::string::npos || device_name.find("adreno 830") != std::string::npos) {
@@ -264,7 +314,7 @@ void GPUCapabilities::queryGLESProperties() {
     
     if (vendor) {
         std::string vendor_str(vendor);
-        std::transform(vendor_str.begin(), vendor_str.end(), vendor_str.begin(), ::tolower);
+        std::transform(vendor_str.begin(), vendor_str.end(), vendor_str.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         
         if (vendor_str.find("qualcomm") != std::string::npos || vendor_str.find("adreno") != std::string::npos) {
             vendor_ = GPUVendor::Adreno;
@@ -277,7 +327,7 @@ void GPUCapabilities::queryGLESProperties() {
     
     if (renderer) {
         std::string renderer_str(renderer);
-        std::transform(renderer_str.begin(), renderer_str.end(), renderer_str.begin(), ::tolower);
+        std::transform(renderer_str.begin(), renderer_str.end(), renderer_str.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         
         if (vendor_ == GPUVendor::Adreno) {
             if (renderer_str.find("830") != std::string::npos) {
@@ -321,7 +371,8 @@ void GPUCapabilities::queryGLESProperties() {
     }
     
     // Check for compute shaders (GLES 3.1+)
-    if (strstr(version, "OpenGL ES 3.1") || strstr(version, "OpenGL ES 3.2")) {
+    if (version != nullptr &&
+        (std::strstr(version, "OpenGL ES 3.1") || std::strstr(version, "OpenGL ES 3.2"))) {
         supported_features_ = supported_features_ | RendererFeature::ComputeShaders;
     }
     

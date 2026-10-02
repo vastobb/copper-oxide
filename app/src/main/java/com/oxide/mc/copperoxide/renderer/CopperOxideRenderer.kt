@@ -15,6 +15,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 
 /**
@@ -22,13 +24,14 @@ import kotlinx.coroutines.withContext
  * Supports Vulkan and OpenGL ES backends with automatic selection and GPU-specific optimizations
  */
 @Keep
-class CopperOxideRenderer(
+open class CopperOxideRenderer(
     private val context: Context,
     private val config: RendererConfig = RendererConfig.Default
 ) : LifecycleObserver, AutoCloseable {
 
     companion object {
         private const val TAG = "CopperOxideRenderer"
+        private const val STATS_INTERVAL_NANOS = 250_000_000L
         private var sNativeLoaded = false
 
         @JvmStatic
@@ -46,7 +49,11 @@ class CopperOxideRenderer(
 
     // Native renderer state
     private var nativeHandle: Long = 0
+
+    @Volatile
     private var isInitialized = false
+
+    @Volatile
     private var currentBackend = RendererBackend.UNKNOWN
 
     /** Backend the renderer actually selected at runtime. */
@@ -55,6 +62,7 @@ class CopperOxideRenderer(
     // Rendering coroutine
     private val renderScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var renderJob: Job? = null
+    private var lastStatsEmitNanos = 0L
     private var targetFps = config.targetFps
     private var frameTimeNanos = 1_000_000_000L / config.targetFps.coerceAtLeast(1)
 
@@ -65,7 +73,10 @@ class CopperOxideRenderer(
     private var surfaceHeight = 0
 
     // Callbacks
+    @Volatile
     private var frameCallback: ((FrameStats) -> Unit)? = null
+
+    @Volatile
     private var errorCallback: ((String) -> Unit)? = null
 
     init {
@@ -120,7 +131,7 @@ class CopperOxideRenderer(
 
         if (result) {
             isInitialized = true
-            currentBackend = RendererBackend.values()[nativeGetBackend()]
+            currentBackend = RendererBackend.entries.getOrElse(nativeGetBackend()) { RendererBackend.UNKNOWN }
             Log.i(TAG, "Renderer initialized with backend: $currentBackend")
             startRenderLoop()
         } else {
@@ -136,7 +147,7 @@ class CopperOxideRenderer(
      */
     private fun startRenderLoop() {
         renderJob = renderScope.launch {
-            while (isInitialized && !renderScope.coroutineContext[Job]!!.isCancelled) {
+            while (isInitialized && !Thread.currentThread().isInterrupted) {
                 val frameStart = System.nanoTime()
 
                 if (nativeBeginFrame()) {
@@ -149,22 +160,26 @@ class CopperOxideRenderer(
 
                 // Frame pacing
                 val frameEnd = System.nanoTime()
-                val elapsed = frameEnd - frameStart
-                val sleepTime = frameTimeNanos - elapsed
+                val sleepTime = frameTimeNanos - (frameEnd - frameStart)
 
                 if (sleepTime > 0) {
                     try {
                         Thread.sleep(sleepTime / 1_000_000, (sleepTime % 1_000_000).toInt())
                     } catch (e: InterruptedException) {
+                        // Restore the flag so the loop condition sees the cancellation.
+                        Thread.currentThread().interrupt()
                         break
                     }
                 }
 
-                // Report frame stats
-                if (frameCallback != null) {
+                // Telemetry is throttled: seven JNI calls plus a main-thread
+                // dispatch every frame is pure overhead for a 60 Hz signal.
+                val callback = frameCallback
+                if (callback != null && frameEnd - lastStatsEmitNanos >= STATS_INTERVAL_NANOS) {
+                    lastStatsEmitNanos = frameEnd
                     val stats = getFrameStats()
                     withContext(Dispatchers.Main) {
-                        frameCallback?.invoke(stats)
+                        callback(stats)
                     }
                 }
             }
@@ -201,8 +216,8 @@ class CopperOxideRenderer(
             rendererString = nativeGetGpuRendererString(),
             vendorString = nativeGetGpuVendorString(),
             versionString = nativeGetGpuVersionString(),
-            vendor = GpuVendor.values()[nativeGetGpuVendor()],
-            architecture = GpuArchitecture.values()[nativeGetGpuArchitecture()],
+            vendor = GpuVendor.entries.getOrElse(nativeGetGpuVendor()) { GpuVendor.UNKNOWN },
+            architecture = GpuArchitecture.entries.getOrElse(nativeGetGpuArchitecture()) { GpuArchitecture.UNKNOWN },
             supportsVulkan = currentBackend == RendererBackend.VULKAN
         )
     }
@@ -211,7 +226,8 @@ class CopperOxideRenderer(
      * Check if a feature is supported
      */
     fun supportsFeature(feature: RendererFeature): Boolean {
-        return nativeSupportsFeature(feature.ordinal)
+        // The bit value is the wire format; ordinals only match by coincidence.
+        return nativeSupportsFeature(feature.bit)
     }
 
     /**
@@ -295,10 +311,18 @@ class CopperOxideRenderer(
         shutdown()
     }
 
+    @androidx.annotation.WorkerThread
     fun shutdown() {
-        renderJob?.cancel()
-        renderScope.coroutineContext[Job]?.cancel()
-
+        // Join the render coroutine before tearing down the native renderer:
+        // cancelling without joining lets a frame call into a destroyed renderer.
+        val job = renderJob
+        renderJob = null
+        if (job != null) {
+            job.cancel()
+            runBlocking {
+                withTimeoutOrNull(2000L) { job.join() }
+            }
+        }
         if (isInitialized) {
             nativeShutdown()
             isInitialized = false

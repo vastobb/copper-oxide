@@ -116,6 +116,13 @@ private:
     uint32_t current_frame_ = 0;
     uint32_t image_index_ = 0;
 
+    // Command recording
+    VkCommandPool command_pool_ = VK_NULL_HANDLE;
+    std::vector<VkCommandBuffer> command_buffers_;
+    VkRenderPass render_pass_ = VK_NULL_HANDLE;
+    std::vector<VkFramebuffer> swapchain_framebuffers_;
+    uint32_t frames_in_flight_ = 2;
+
     // Synchronization
     std::vector<VkSemaphore> image_available_semaphores_;
     std::vector<VkSemaphore> render_finished_semaphores_;
@@ -155,11 +162,13 @@ private:
     bool surface_created_ = false;
 
     // Threading
-    std::thread shader_compiler_thread_;
-    std::atomic<bool> shader_compiler_running_{false};
     std::mutex frame_mutex_;
 
     // Private methods
+    bool create_command_pool();
+    bool create_render_pass();
+    bool create_swapchain_framebuffers();
+    bool recreate_swapchain();
     bool create_instance();
     bool select_physical_device();
     bool create_logical_device();
@@ -176,9 +185,7 @@ private:
     void apply_driver_workarounds();
 
     // Frame management
-    bool acquire_next_image();
-    void submit_frame();
-    void wait_for_fence(VkFence fence, uint64_t timeout = UINT64_MAX);
+    void wait_for_fence(VkFence fence, uint64_t timeout);
 
     // Resource cleanup
     void cleanup_frame_resources();

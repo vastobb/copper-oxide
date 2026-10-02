@@ -1,7 +1,10 @@
 #pragma once
 
 #include "renderer_base.h"
+#include <algorithm>
+#include <cstring>
 #include <string>
+#include <vector>
 #include <memory>
 
 namespace copper {
@@ -32,8 +35,16 @@ public:
     GPUCapabilities& operator=(GPUCapabilities&&) noexcept = default;
 
     bool detect();
+
+    // Seed the capability layer with information already gathered by a backend
+    // so that vendor workarounds can run without re-probing the driver.
+    void setDetectedInfo(GPUVendor vendor, GPUArchitecture arch,
+                         const std::vector<std::string>& extensions,
+                         RendererFeature features);
     void applyWorkarounds(const RendererConfig& config) const;
     GPUOptimizationConfig getOptimizationConfig() const;
+
+    GPUOptimizationConfig buildOptimizationConfig() const;
 
     GPUVendor getVendor() const { return vendor_; }
     GPUArchitecture getArchitecture() const { return architecture_; }

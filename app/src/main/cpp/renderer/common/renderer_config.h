@@ -24,6 +24,7 @@ public:
 
     // Validation
     bool validate() const;
+    void clampToValidRanges();
 
     // Apply GPU-specific optimizations
     void applyGPUOptimizations(GPUVendor vendor, GPUArchitecture arch);

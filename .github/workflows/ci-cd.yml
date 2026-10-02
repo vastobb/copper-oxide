@@ -42,24 +42,14 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: 'platforms;android-35 build-tools;35.0.0 cmake;3.22.1 ndk;27.2.12479018'
+          packages: 'platforms;android-35 build-tools;35.0.0'
           accept-android-sdk-licenses: true
-
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Run spotless (format check baseline)
-        run: ./gradlew spotlessApply spotlessCheck --no-daemon
+      - name: Run spotless check
+        run: ./gradlew spotlessCheck --no-daemon
 
       - name: Run detekt
         run: ./gradlew detekt --no-daemon
@@ -94,18 +84,8 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: 'platforms;android-35 build-tools;35.0.0 cmake;3.22.1 ndk;27.2.12479018'
+          packages: 'platforms;android-35 build-tools;35.0.0'
           accept-android-sdk-licenses: true
-
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
@@ -228,6 +208,18 @@ jobs:
           ls -la "$APK_PATH"
           unzip -l "$APK_PATH" | head -30
 
+      - name: Build androidTest APK
+        if: matrix.build_type == 'debug'
+        run: ./gradlew assembleDebugAndroidTest --no-daemon --stacktrace
+
+      - name: Upload androidTest APK
+        if: matrix.build_type == 'debug'
+        uses: actions/upload-artifact@v4
+        with:
+          name: androidtest-apk
+          path: app/build/outputs/apk/androidTest/debug/*.apk
+          retention-days: 7
+
       - name: Build AAB (release only)
         if: matrix.build_type == 'release'
         run: |
@@ -296,6 +288,12 @@ jobs:
           name: apk-debug
           path: app/build/outputs/apk/debug/
 
+      - name: Download androidTest APK
+        uses: actions/download-artifact@v4
+        with:
+          name: androidtest-apk
+          path: app/build/outputs/apk/androidTest/debug/
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -312,8 +310,12 @@ jobs:
           arch: x86_64
           disable-linux-hw-accel: false
           force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
-          script: ./gradlew connectedAndroidTest --no-daemon --stacktrace
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot -no-metrics
+          script: |
+            adb install -r -t app/build/outputs/apk/androidTest/debug/*.apk
+            adb install -r -t app/build/outputs/apk/debug/*.apk
+            adb shell am instrument -w com.oxide.mc.copperoxide.test/androidx.test.runner.AndroidJUnitRunner
 
       - name: Upload test results
         if: always()

@@ -112,18 +112,8 @@ private:
     int surface_width_ = 0;
     int surface_height_ = 0;
 
-    // Framebuffer
-    GLuint default_framebuffer_ = 0;
-    GLuint default_color_renderbuffer_ = 0;
-    GLuint default_depth_renderbuffer_ = 0;
-
-    // Sync
-    std::vector<GLsync> fences_;
-    uint32_t current_fence_ = 0;
-
-    // Debug
-    bool debug_ext_supported_ = false;
-    bool khr_debug_supported_ = false;
+    // Context health
+    std::atomic<bool> context_lost_{false};
 
     // Managers
     std::unique_ptr<BufferManager> buffer_manager_;
@@ -146,8 +136,6 @@ private:
     bool surface_created_ = false;
 
     // Threading
-    std::thread shader_compiler_thread_;
-    std::atomic<bool> shader_compiler_running_{false};
     std::mutex frame_mutex_;
 
     // Private methods
@@ -155,6 +143,7 @@ private:
     bool create_egl_context();
     bool create_window_surface();
     bool create_info_surface();
+    void destroy_egl();
     bool query_gpu_info();
     void query_limits();
     void query_extensions();

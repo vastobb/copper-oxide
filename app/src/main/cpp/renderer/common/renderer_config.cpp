@@ -298,6 +298,23 @@ RendererConfig RendererConfig::createDebug() {
     return config;
 }
 
+void RendererConfig::clampToValidRanges() {
+    preferredBackend = (preferredBackend == RendererBackend::Unknown) ? RendererBackend::Auto
+                                                                    : preferredBackend;
+    if (maxFramesInFlight < 1 || maxFramesInFlight > 8) maxFramesInFlight = 3;
+    if (maxCommandBuffersPerFrame < 1) maxCommandBuffersPerFrame = 16;
+    if (maxDescriptorSets < 64) maxDescriptorSets = 8192;
+    if (maxPushConstantsSize < 64) maxPushConstantsSize = 128;
+    if (textureCacheSizeMb < 16) textureCacheSizeMb = 256;
+    if (shaderCacheSizeMb < 8) shaderCacheSizeMb = 64;
+    if (bufferPoolSizeMb < 16) bufferPoolSizeMb = 128;
+    if (frameTimeoutMs < 100) frameTimeoutMs = 5000;
+    if (targetFps < 1) targetFps = 60;
+    if (thermalThrottleThreshold < 0.1f || thermalThrottleThreshold > 1.0f) {
+        thermalThrottleThreshold = 0.85f;
+    }
+}
+
 bool RendererConfig::validate() const {
     if (maxFramesInFlight < 2 || maxFramesInFlight > 4) return false;
     if (maxCommandBuffersPerFrame < 4 || maxCommandBuffersPerFrame > 32) return false;

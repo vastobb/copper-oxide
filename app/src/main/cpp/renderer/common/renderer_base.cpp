@@ -49,17 +49,32 @@ struct RendererBase::Impl {
 RendererBase::RendererBase() : pImpl(std::make_unique<Impl>()) {}
 RendererBase::~RendererBase() = default;
 
-bool RendererBase::initialize(const RendererConfig& config) {
+bool RendererBase::initialize(const RendererConfig& configIn) {
+    // Clamp rather than reject: callers integrate from Java where a single bad
+    // value must not make the renderer unusable.
+    RendererConfig config = configIn;
+    config.clampToValidRanges();
+    if (!config.validate()) {
+        return false;
+    }
+
+    // detectGPU() is virtual and ends up taking the backend frame mutex, so it
+    // must not be called while pImpl->mutex is held (lock-order inversion).
+    if (!detectGPU()) {
+        return false;
+    }
+
     std::lock_guard<std::mutex> lock(pImpl->mutex);
     if (pImpl->initialized) {
         return true;
     }
 
     pImpl->config = config;
-    pImpl->maxFramesInFlight = config.maxFramesInFlight;
+    // Guard against a zero divisor: the frame index is taken modulo this.
+    pImpl->maxFramesInFlight = config.maxFramesInFlight > 0 ? config.maxFramesInFlight : 1;
 
-    if (!detectGPU()) {
-        return false;
+    if (pImpl->profiler) {
+        pImpl->profiler->beginFrame(pImpl->frameNumber);
     }
 
     pImpl->initialized = true;
@@ -67,13 +82,19 @@ bool RendererBase::initialize(const RendererConfig& config) {
 }
 
 void RendererBase::shutdown() {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    if (!pImpl->initialized) {
-        return;
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        if (!pImpl->initialized) {
+            return;
+        }
     }
 
+    // waitIdle() is virtual and acquires the backend frame mutex; calling it
+    // under pImpl->mutex inverts the lock order and can deadlock.
     waitIdle();
 
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    pImpl->frameActive = false;
     pImpl->resourcePool.reset();
     pImpl->syncManager.reset();
     pImpl->stateManager.reset();
@@ -91,15 +112,23 @@ bool RendererBase::beginFrame() {
         return false;
     }
 
-    pImpl->frameStartTime = getCurrentTimeNs();
-    pImpl->frameActive = true;
-    pImpl->drawCalls = 0;
-
+    const uint64_t frameStart = getCurrentTimeNs();
     if (pImpl->profiler) {
         pImpl->profiler->beginFrame(pImpl->frameNumber);
     }
 
-    return onBeginFrame();
+    // The backend hook runs before frameActive is latched: a failed acquire
+    // (for example VK_ERROR_OUT_OF_DATE_KHR during a resize) must not leave the
+    // renderer permanently unable to start the next frame.
+    if (!onBeginFrame()) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    pImpl->frameStartTime = frameStart;
+    pImpl->drawCalls = 0;
+    pImpl->frameActive = true;
+    return true;
 }
 
 void RendererBase::endFrame() {
@@ -109,16 +138,21 @@ void RendererBase::endFrame() {
 
     onEndFrame();
 
-    uint64_t frameEndTime = getCurrentTimeNs();
-    pImpl->lastFrameTimeMs = (frameEndTime - pImpl->frameStartTime) / 1'000'000.0;
+    const uint64_t frameEndTime = getCurrentTimeNs();
+    const double frameTimeMs = (frameEndTime - pImpl->frameStartTime) / 1'000'000.0;
 
-    if (pImpl->profiler) {
-        pImpl->profiler->endFrame(pImpl->frameNumber, pImpl->lastFrameTimeMs, pImpl->lastCpuTimeMs, pImpl->lastGpuTimeMs, pImpl->drawCalls);
-    }
-
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    pImpl->lastFrameTimeMs = frameTimeMs;
+    // Until backend timestamp queries are wired up, the wall-clock frame time
+    // is the only honest number we have; CPU time is measured up to submit.
+    pImpl->lastCpuTimeMs = frameTimeMs;
+    pImpl->lastGpuTimeMs = 0.0;
     pImpl->frameActive = false;
     pImpl->frameNumber++;
-    pImpl->currentFrameIndex = (pImpl->currentFrameIndex + 1) % pImpl->maxFramesInFlight;
+
+    if (pImpl->profiler) {
+        pImpl->profiler->endFrame(pImpl->frameNumber, frameTimeMs, frameTimeMs, 0.0, pImpl->drawCalls);
+    }
 }
 
 void RendererBase::present() {
@@ -126,9 +160,11 @@ void RendererBase::present() {
 }
 
 void RendererBase::onSurfaceChanged(uint32_t width, uint32_t height) {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    // The virtual onResize() takes the backend frame mutex, so it must run
+    // before pImpl->mutex is acquired.
     onResize(width, height);
-    
+
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
     if (pImpl->framebufferManager) {
         pImpl->framebufferManager->onSurfaceChanged(width, height);
     }
@@ -160,10 +196,18 @@ void RendererBase::onMemoryPressure(int level) {
 }
 
 void RendererBase::onThermalThrottling(float temperatureRatio) {
-    if (temperatureRatio >= pImpl->config.thermalThrottleThreshold) {
-        if (pImpl->config.batterySaverMode) {
-            reduceQuality();
-        }
+    RendererConfig config;
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        config = pImpl->config;
+    }
+
+    const bool throttling_aware = config.thermalThrottlingAware || config.batterySaverMode;
+    if (!throttling_aware) {
+        return;
+    }
+    if (temperatureRatio >= config.thermalThrottleThreshold) {
+        reduceQuality();
     }
 }
 
