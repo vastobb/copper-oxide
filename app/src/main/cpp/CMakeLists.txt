@@ -8,14 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Android-specific settings
 if(ANDROID)
     set(CMAKE_ANDROID_STL c++_shared)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -frtti -Wall -Wextra -O3 -flto=thin")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -frtti -Wall -Wextra -O3")
     add_definitions(-DANDROID -D__ANDROID__ -DNDEBUG)
-    
-    # Link time optimization
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -flto=thin -O3")
-    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -flto=thin -O3")
-    set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -flto=thin -O3")
 endif()
 
 # Build type configurations
