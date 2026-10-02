@@ -49,6 +49,9 @@ class CopperOxideRenderer(
     private var isInitialized = false
     private var currentBackend = RendererBackend.UNKNOWN
 
+    /** Backend the renderer actually selected at runtime. */
+    fun currentBackend(): RendererBackend = currentBackend
+
     // Rendering coroutine
     private val renderScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var renderJob: Job? = null

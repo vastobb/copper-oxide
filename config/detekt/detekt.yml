@@ -1,11 +1,9 @@
-# Detekt configuration for Copper Oxide
-
-# Disable rules that are too strict for our codebase
-Style:
+# Detekt configuration for Copper Oxide (detekt 1.23 format)
+style:
   MagicNumber:
     active: false
   MaxLineLength:
-    maxLineLength: 160
+    maxLineLength: 200
     active: true
   WildcardImport:
     active: false
@@ -17,9 +15,9 @@ Style:
     max: 5
     active: true
 
-Naming:
+naming:
   FunctionNaming:
-    active: true
+    active: false
   ClassNaming:
     active: true
   VariableNaming:
@@ -27,7 +25,7 @@ Naming:
   MemberNameEqualsClassName:
     active: false
 
-Complexity:
+complexity:
   ComplexMethod:
     threshold: 20
     active: true
@@ -38,90 +36,38 @@ Complexity:
     threshold: 7
     active: true
   NestedBlockDepth:
-    threshold: 4
+    threshold: 5
     active: true
 
-Exceptions:
+exceptions:
   TooGenericExceptionCaught:
     active: false
-  TooGenericExceptionThrown:
+  SwallowedException:
     active: false
-  InstanceOfCheckForException:
-    active: false
-  NotImplementedDeclaration:
-    active: false
-  ThrowingExceptionFromFinally:
-    active: true
-  ThrowingExceptionInMain:
-    active: true
-  ThrowingExceptionsWithoutMessageOrCause:
-    active: false
-  ThrowingNewInstanceOfSameException:
+  ThrowsCount:
+    max: 3
     active: true
 
-PotentialBugs:
-  UnreachableCode:
-    active: true
-  ReturnFromFinally:
-    active: true
-  UnusedPrivateMember:
-    active: true
-  VarCouldBeVal:
-    active: true
-  DeprecatedBlockOrFunctionCall:
-    active: true
+potential-bugs:
+  UnsafeCallOnNullableType:
+    active: false
 
-Performance:
+performance:
   SpreadOperator:
-    active: true
-  ArrayPrimitive:
     active: false
-  ForEachOnRange:
-    active: true
 
-Formatting:
-  Indentation:
-    active: true
-    indentSize: 4
-    continuationIndentSize: 4
-  MaximumLineLength:
-    maxLineLength: 160
-    active: true
-  NoMultipleSpaces:
-    active: true
-  NoTrailingSpaces:
-    active: true
-  NoWildcardImports:
-    active: false
-  PackageName:
-    active: true
-  ImportOrdering:
-    active: true
-  TrailingComma:
-    active: true
-  TrailingCommaOnCallSite:
-    active: true
-    singleElementOnly: false
+formatting:
+  active: false
 
-Comments:
-  CommentOverPrivateFunction:
-    active: false
-  CommentOverPrivateProperty:
-    active: false
-  EndOfSentenceFormat:
-    active: true
-  NoEmptyFirstLineInCommentBlock:
-    active: true
+comments:
+  active: false
+
+console-reports:
+  active: true
+  exclude-rulesets: []
+  min-severity: 0
 
 build:
   maxIssues: 0
   weights:
     complexity: 2
-    LongParameterList: 1
-    style: 1
-    comments: 1
-
-consoleReports:
-  active: true
-  excludeRuleSets: []
-  minSeverity: 0

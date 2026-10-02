@@ -1,705 +1,174 @@
 package com.oxide.mc.copperoxide.gui
 
 import android.os.Bundle
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.weight
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Architecture
-import androidx.compose.material.icons.filled.Badge
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.MonitorHeart
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Remove
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.TrendingDown
-import androidx.compose.material.icons.filled.TrendingUp
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.Verified
-import androidx.compose.material3.BottomNavigation
-import androidx.compose.material3.BottomNavigationItem
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.oxide.mc.copperoxide.renderer.CopperOxideRenderer
 import com.oxide.mc.copperoxide.renderer.FrameStats
 import com.oxide.mc.copperoxide.renderer.GpuInfo
 import com.oxide.mc.copperoxide.renderer.RendererBackend
-import com.oxide.mc.copperoxide.renderer.RendererFeature
-import com.oxide.mc.copperoxide.ui.theme.ColorPalette
+import com.oxide.mc.copperoxide.renderer.RendererConfig
 import com.oxide.mc.copperoxide.ui.theme.CopperOxideTheme
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
+/**
+ * Minimal diagnostics harness for the Copper Oxide renderer.
+ *
+ * This activity exists only to give the renderer a surface and expose its
+ * diagnostics. Copper Oxide itself is a renderer library; launchers own their
+ * own UI and embed the renderer directly.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 class MainActivity : ComponentActivity() {
+
+    private var renderer: CopperOxideRenderer? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             CopperOxideTheme {
-                MainScreen()
+                DiagnosticsScreen()
             }
         }
     }
-}
 
-@Composable
-fun MainScreen() {
-    val renderer by remember { mutableStateOf<CopperOxideRenderer?>(null) }
-    val currentTab by remember { mutableStateOf(0) }
-    val gpuInfo by remember { mutableStateOf<GpuInfo?>(null) }
-    val frameStats by remember { mutableStateOf<FrameStats?>(null) }
-    val showSettings by remember { mutableStateOf(false) }
-    val showDiagnostics by remember { mutableStateOf(false) }
+    override fun onDestroy() {
+        renderer?.shutdown()
+        renderer = null
+        super.onDestroy()
+    }
 
-    // Initialize renderer
-    // In a real app, this would be done with a proper surface from a SurfaceView/TextureView
+    @Composable
+    private fun DiagnosticsScreen() {
+        val context = androidx.compose.ui.platform.LocalContext.current
+        var surfaceView by remember { mutableStateOf<SurfaceView?>(null) }
+        var surfaceHolder by remember { mutableStateOf<SurfaceHolder?>(null) }
+        var gpuInfo by remember { mutableStateOf<GpuInfo?>(null) }
+        var frameStats by remember { mutableStateOf<FrameStats?>(null) }
+        var backend by remember { mutableStateOf<RendererBackend?>(null) }
+        var status by remember { mutableStateOf("Renderer not initialized") }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Copper Oxide", style = MaterialTheme.typography.headlineSmall) },
-                navigationIcon = {
-                    IconButton(onClick = { showSettings = true }) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { showDiagnostics = true }) {
-                        Icon(Icons.Default.MonitorHeart, contentDescription = "Diagnostics")
-                    }
-                    IconButton(onClick = { /* Show about */ }) {
-                        Icon(Icons.Default.Info, contentDescription = "About")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+        LaunchedEffect(surfaceHolder) {
+            val holder = surfaceHolder ?: return@LaunchedEffect
+            if (holder.surface.isValid) {
+                val instance = CopperOxideRenderer(
+                    context.applicationContext,
+                    RendererConfig.Default
                 )
-            )
-        },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { /* Start/Stop rendering */ },
-                icon = { Icon(Icons.Default.PlayArrow, contentDescription = "Start") },
-                text = { Text("Start Rendering") },
-                expanded = true
-            )
-        }
-    ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
-            // Main content based on tab
-            when (currentTab) {
-                0 -> HomeTab(renderer, gpuInfo, frameStats)
-                1 -> PerformanceTab(frameStats)
-                2 -> CompatibilityTab()
-                3 -> SettingsTab()
-                4 -> AboutTab()
+                if (instance.initialize(holder.surface)) {
+                    renderer = instance
+                    backend = instance.currentBackend()
+                    gpuInfo = instance.getGpuInfo()
+                    status = "Renderer running on ${instance.currentBackend()}"
+                } else {
+                    instance.shutdown()
+                    status = "Renderer initialization failed"
+                }
             }
+        }
 
-            // Bottom navigation
-            BottomNavigation(
-                modifier = Modifier.align(Alignment.BottomCenter)
+        LaunchedEffect(renderer) {
+            while (renderer != null) {
+                frameStats = renderer?.getFrameStats()
+                delay(500)
+            }
+        }
+
+        Surface(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                val tabs = listOf(
-                    TabItem(Icons.Default.Home, "Home", 0),
-                    TabItem(Icons.Default.Speed, "Performance", 1),
-                    TabItem(Icons.Default.CheckCircle, "Compatibility", 2),
-                    TabItem(Icons.Default.Tune, "Settings", 3),
-                    TabItem(Icons.Default.Info, "About", 4)
-                )
+                Text("Copper Oxide Renderer", style = MaterialTheme.typography.headlineSmall)
+                Text(status, style = MaterialTheme.typography.bodyMedium)
 
-                tabs.forEach { tab ->
-                    BottomNavigationItem(
-                        icon = { Icon(tab.icon, contentDescription = null) },
-                        label = { Text(tab.label) },
-                        selected = currentTab == tab.index,
-                        onClick = { currentTab = tab.index },
-                        selectedContentColor = MaterialTheme.colorScheme.primary,
-                        unselectedContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                Box(modifier = Modifier.fillMaxWidth().weight(1f, fill = true)) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { ctx ->
+                            SurfaceView(ctx).also { view ->
+                                surfaceView = view
+                                surfaceHolder = view.holder
+                            }
+                        }
                     )
                 }
-            }
-        }
-    }
-}
 
-@Composable
-fun HomeTab(
-    renderer: CopperOxideRenderer?,
-    gpuInfo: GpuInfo?,
-    frameStats: FrameStats?
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        // GPU Info Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-        ) {
-            CardContent(
-                title = "GPU Information",
-                icon = Icons.Default.Memory
-            ) {
-                if (gpuInfo != null) {
-                    GpuInfoCard(gpuInfo)
-                } else {
-                    PlaceholderCard("Initializing GPU detection...")
+                GpuCard(gpuInfo)
+                StatsCard(frameStats)
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        renderer?.shutdown()
+                        renderer = null
+                        status = "Renderer stopped"
+                    }) { Text("Stop") }
                 }
             }
         }
+    }
+}
 
-        // Renderer Status Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-        ) {
-            CardContent(
-                title = "Renderer Status",
-                icon = Icons.Default.DeveloperMode
-            ) {
-                RendererStatusCard(renderer)
-            }
-        }
-
-        // Quick Stats Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-        ) {
-            CardContent(
-                title = "Live Statistics",
-                icon = Icons.Default.Analytics
-            ) {
-                if (frameStats != null) {
-                    QuickStatsCard(frameStats)
+@Composable
+private fun GpuCard(gpuInfo: GpuInfo?) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text("GPU", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = if (gpuInfo == null) {
+                    "No data"
                 } else {
-                    PlaceholderCard("Waiting for frame data...")
-                }
-            }
-        }
-
-        // Feature Support Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-        ) {
-            CardContent(
-                title = "Feature Support",
-                icon = Icons.Default.FeaturedPlayList
-            ) {
-                FeatureSupportCard(renderer)
-            }
+                    "${gpuInfo.vendor} ${gpuInfo.architecture}\n${gpuInfo.rendererString}\n" +
+                        "GL: ${gpuInfo.versionString}"
+                },
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }
 
 @Composable
-fun GpuInfoCard(gpuInfo: GpuInfo) {
-    Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        // GPU Vendor Icon
-        Box(
-            modifier = Modifier
-                .size(80.dp)
-                .background(
-                    ColorPalette.gpuVendorColor(gpuInfo.vendor),
-                    CircleShape
-                )
-                .padding(16.dp)
-        ) {
-            Icon(
-                imageVector = ColorPalette.gpuVendorIcon(gpuInfo.vendor),
-                contentDescription = null,
-                tint = Color.White
-            )
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        Text(
-            gpuInfo.rendererString,
-            style = MaterialTheme.typography.headlineSmall,
-            textAlign = TextAlign.Center,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-
-        Spacer(Modifier.height(4.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
-        ) {
-            InfoChip(
-                icon = Icons.Default.Badge,
-                label = gpuInfo.vendor.name,
-                color = ColorPalette.gpuVendorColor(gpuInfo.vendor)
-            )
-            InfoChip(
-                icon = Icons.Default.Architecture,
-                label = gpuInfo.architecture.name,
-                color = MaterialTheme.colorScheme.secondary
-            )
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        Text(
-            "Driver: ${gpuInfo.versionString}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        if (gpuInfo.supportsVulkan) {
-            Spacer(Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Icon(Icons.Default.Verified, tint = MaterialTheme.colorScheme.primary, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
+private fun StatsCard(frameStats: FrameStats?) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text("Frame statistics", style = MaterialTheme.typography.titleMedium)
+            if (frameStats == null) {
+                Text("No frame data", style = MaterialTheme.typography.bodySmall)
+            } else {
                 Text(
-                    "Vulkan Supported",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    text = "FPS: ${"%.1f".format(frameStats.fps)}\n" +
+                        "Frame: ${"%.2f".format(frameStats.frameTimeMs)} ms\n" +
+                        "CPU: ${"%.2f".format(frameStats.cpuTimeMs)} ms\n" +
+                        "GPU: ${"%.2f".format(frameStats.gpuTimeMs)} ms\n" +
+                        "Draw calls: ${frameStats.drawCalls}",
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
         }
-    }
-}
-
-@Composable
-fun RendererStatusCard(renderer: CopperOxideRenderer?) {
-    Column(Modifier.padding(16.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text("Backend", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(
-                    renderer?.let { "Active" } ?: "Not Initialized",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = if (renderer != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-                )
-            }
-
-            if (renderer != null) {
-                RendererBackendIndicator(renderer)
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            StatusIndicator(
-                label = "VSync",
-                value = "On",
-                icon = Icons.Default.VideoStable,
-                color = MaterialTheme.colorScheme.tertiary
-            )
-            StatusIndicator(
-                label = "Low Latency",
-                value = "Off",
-                icon = Icons.Default.Speed,
-                color = MaterialTheme.colorScheme.secondary
-            )
-            StatusIndicator(
-                label = "Battery Saver",
-                value = "Off",
-                icon = Icons.Default.BatterySaver,
-                color = MaterialTheme.colorScheme.tertiary
-            )
-        }
-    }
-}
-
-@Composable
-fun RendererBackendIndicator(renderer: CopperOxideRenderer) {
-    // This would show the actual backend from the renderer
-    // For now, placeholder
-    Box(
-        modifier = Modifier
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(16.dp))
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
-        ) {
-            Icon(
-                Icons.Default.Memory,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                contentDescription = null
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-                "Vulkan", // Would come from renderer
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-        }
-    }
-}
-
-@Composable
-fun StatusIndicator(
-    label: String,
-    value: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    color: androidx.compose.ui.graphics.Color
-) {
-    Column(
-        modifier = Modifier
-            .weight(1f)
-            .padding(12.dp)
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(12.dp)),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Icon(icon, tint = color, contentDescription = null)
-        Spacer(Modifier.height(4.dp))
-        Text(value, style = MaterialTheme.typography.titleMedium, color = color)
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-@Composable
-fun QuickStatsCard(frameStats: FrameStats) {
-    Column(Modifier.padding(16.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            QuickStatItem(
-                label = "FPS",
-                value = "%.1f".format(frameStats.fps),
-                icon = Icons.Default.Speed,
-                color = if (frameStats.fps >= 55) ColorPalette.Success else if (frameStats.fps >= 30) ColorPalette.Warning else ColorPalette.Error,
-                trend = Trend.Stable
-            )
-            QuickStatItem(
-                label = "Frame Time",
-                value = "%.1f ms".format(frameStats.frameTimeMs),
-                icon = Icons.Default.Timer,
-                color = MaterialTheme.colorScheme.primary,
-                trend = Trend.Stable
-            )
-            QuickStatItem(
-                label = "CPU",
-                value = "%.1f ms".format(frameStats.cpuTimeMs),
-                icon = Icons.Default.Memory,
-                color = MaterialTheme.colorScheme.secondary,
-                trend = Trend.Stable
-            )
-            QuickStatItem(
-                label = "GPU",
-                value = "%.1f ms".format(frameStats.gpuTimeMs),
-                icon = Icons.Default.DeveloperBoard,
-                color = MaterialTheme.colorScheme.tertiary,
-                trend = Trend.Stable
-            )
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            QuickStatItem(
-                label = "Draw Calls",
-                value = frameStats.drawCalls.toString(),
-                icon = Icons.Default.CallSplit,
-                color = MaterialTheme.colorScheme.primary,
-                trend = Trend.Stable
-            )
-            QuickStatItem(
-                label = "GPU Mem",
-                value = formatBytes(frameStats.gpuMemoryUsed),
-                icon = Icons.Default.Storage,
-                color = MaterialTheme.colorScheme.secondary,
-                trend = Trend.Stable
-            )
-            QuickStatItem(
-                label = "CPU Mem",
-                value = formatBytes(frameStats.cpuMemoryUsed),
-                icon = Icons.Default.DataUsage,
-                color = MaterialTheme.colorScheme.tertiary,
-                trend = Trend.Stable
-            )
-        }
-    }
-}
-
-@Composable
-fun QuickStatItem(
-    label: String,
-    value: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    color: androidx.compose.ui.graphics.Color,
-    trend: Trend
-) {
-    Column(
-        modifier = Modifier
-            .weight(1f)
-            .padding(12.dp)
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(12.dp)),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Row(horizontalArrangement = Arrangement.Center) {
-            Icon(icon, tint = color, contentDescription = null)
-            Spacer(Modifier.width(4.dp))
-            Text(value, style = MaterialTheme.typography.titleMedium, color = color)
-            when (trend) {
-                Trend.Up -> Icon(Icons.Default.TrendingUp, tint = ColorPalette.Success, contentDescription = "Increasing")
-                Trend.Down -> Icon(Icons.Default.TrendingDown, tint = ColorPalette.Error, contentDescription = "Decreasing")
-                Trend.Stable -> Icon(Icons.Default.Remove, tint = MaterialTheme.colorScheme.onSurfaceVariant, contentDescription = "Stable")
-            }
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-@Composable
-fun FeatureSupportCard(renderer: CopperOxideRenderer?) {
-    Column(Modifier.padding(16.dp)) {
-        val features = listOf(
-            FeatureItem("Compute Shaders", RendererFeature.COMPUTE_SHADERS),
-            FeatureItem("Indirect Draw", RendererFeature.INDIRECT_DRAW),
-            FeatureItem("Bindless Textures", RendererFeature.BINDLESS_TEXTURES),
-            FeatureItem("Descriptor Indexing", RendererFeature.DESCRIPTOR_INDEXING),
-            FeatureItem("Timeline Semaphore", RendererFeature.TIMELINE_SEMAPHORE),
-            FeatureItem("Dynamic Rendering", RendererFeature.DYNAMIC_RENDERING),
-            FeatureItem("Synchronization 2", RendererFeature.SYNCHRONIZATION_2),
-            FeatureItem("Mesh Shaders", RendererFeature.MESH_SHADERS),
-        )
-
-        LazyColumn(
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(0.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            items(features) { feature ->
-                FeatureRow(
-                    feature = feature,
-                    supported = renderer?.supportsFeature(feature.feature) ?: false
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun FeatureRow(feature: FeatureItem, supported: Boolean) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-            .background(
-                if (supported) ColorPalette.Success.copy(alpha = 0.1f) else ColorPalette.Error.copy(alpha = 0.1f),
-                RoundedCornerShape(8.dp)
-            ),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            feature.name,
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (supported) ColorPalette.Success else MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(
-                if (supported) Icons.Default.CheckCircle else Icons.Default.Cancel,
-                tint = if (supported) ColorPalette.Success else ColorPalette.Error,
-                contentDescription = if (supported) "Supported" else "Not Supported"
-            )
-            Text(
-                if (supported) "Supported" else "Unavailable",
-                style = MaterialTheme.typography.labelMedium,
-                color = if (supported) ColorPalette.Success else ColorPalette.Error
-            )
-        }
-    }
-}
-
-@Composable
-fun PerformanceTab(frameStats: FrameStats?) {
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Performance Monitor", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(16.dp))
-        // Would show detailed performance graphs, frame time history, etc.
-        PlaceholderCard("Performance graphs coming soon...")
-    }
-}
-
-@Composable
-fun CompatibilityTab() {
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Compatibility Matrix", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(16.dp))
-        // Would show mod/shader compatibility
-        PlaceholderCard("Compatibility matrix coming soon...")
-    }
-}
-
-@Composable
-fun SettingsTab() {
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Settings", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(16.dp))
-        PlaceholderCard("Settings coming soon...")
-    }
-}
-
-@Composable
-fun AboutTab() {
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("About Copper Oxide", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(16.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-        ) {
-            Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    Icons.Default.Diamond,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(64.dp)
-                )
-                Spacer(Modifier.height(16.dp))
-                Text("Copper Oxide", style = MaterialTheme.typography.headlineLarge)
-                Text("Version 1.0.0", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    "High-performance Minecraft Java Edition rendering translation layer for Android.\nSupports Vulkan and OpenGL ES backends with automatic GPU-specific optimizations.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(16.dp))
-                Text("Author: oxide-mc", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-    }
-}
-
-@Composable
-fun PlaceholderCard(message: String) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp)
-            .height(120.dp)
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(12.dp)),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(Icons.Default.HourglassEmpty, tint = MaterialTheme.colorScheme.onSurfaceVariant, contentDescription = null, modifier = Modifier.size(32.dp))
-            Spacer(Modifier.height(8.dp))
-            Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
-        }
-    }
-}
-
-@Composable
-fun CardContent(
-    title: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    content: @Composable () -> Unit
-) {
-    Column(Modifier.padding(16.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, tint = MaterialTheme.colorScheme.primary, contentDescription = null)
-                Text(title, style = MaterialTheme.typography.titleLarge)
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        content()
-    }
-}
-
-@Composable
-fun InfoChip(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, color: androidx.compose.ui.graphics.Color) {
-    Row(
-        modifier = Modifier
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .background(color.copy(alpha = 0.15f), RoundedCornerShape(16.dp)),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        Icon(icon, tint = color, contentDescription = null)
-        Text(label, style = MaterialTheme.typography.labelMedium, color = color)
-    }
-}
-
-data class TabItem(
-    val icon: androidx.compose.ui.graphics.vector.ImageVector,
-    val label: String,
-    val index: Int
-)
-
-data class FeatureItem(
-    val name: String,
-    val feature: RendererFeature
-)
-
-enum class Trend { Up, Down, Stable }
-
-fun formatBytes(bytes: Long): String {
-    return when {
-        bytes >= 1_073_741_824 -> "%.2f GB".format(bytes / 1_073_741_824.0)
-        bytes >= 1_048_576 -> "%.2f MB".format(bytes / 1_048_576.0)
-        bytes >= 1024 -> "%.2f KB".format(bytes / 1024.0)
-        else -> "$bytes B"
     }
 }
