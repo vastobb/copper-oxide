@@ -1,5 +1,7 @@
 #include "gles_profiler.h"
 
+#include "gles_missing_es31.h"
+
 #include "renderer_base.h"
 
 #include <android/log.h>
@@ -208,17 +210,27 @@ void GLESCProfiler::pollPreviousQueryLocked(size_t current_slot) {
 
     // Non-blocking poll. Reading GL_QUERY_RESULT directly would wait for the
     // query, which is the stall this class exists to avoid.
-    // glGetQueryObjecti64v is the ES 3.0 core entry point; the i/u variants are
-    // only declared by extension headers, and the availability flag is a boolean
-    // that the 64-bit form accepts without loss.
-    GLint64 available = 0;
-    glGetQueryObjecti64v(query, GL_QUERY_RESULT_AVAILABLE, &available);
+    // The availability flag fits in 32 bits and glGetQueryObjectuiv is declared
+    // by the headers this build resolves.
+    GLuint available = 0;
+    glGetQueryObjectuiv(query, GL_QUERY_RESULT_AVAILABLE, &available);
     if (available == 0) {
         return;
     }
 
+    // The elapsed time does not: GL_TIME_ELAPSED_EXT reports nanoseconds in a
+    // 64-bit value, so the 64-bit getter is resolved at run time (see
+    // gles_missing_es31.h). Without it the measurement is reported as invalid
+    // rather than truncated to the low 32 bits, which would be a plausible but
+    // wrong number.
+    PFNCO_GLES_GETQUERYOBJECTI64V read_result = copper::gles::getQueryObjecti64v();
+    if (read_result == nullptr) {
+        last_gpu_time_valid_ = false;
+        last_gl_error_ = glGetError();
+        return;
+    }
     GLint64 elapsed_ns = 0;
-    glGetQueryObjecti64v(query, GL_QUERY_RESULT, &elapsed_ns);
+    read_result(query, GL_QUERY_RESULT, &elapsed_ns);
     last_gl_error_ = glGetError();
     // GL_TIME_ELAPSED (unlike GL_TIMESTAMP_EXT) is defined to report the elapsed
     // time, so no disjoint-availability check is needed here; a driver that

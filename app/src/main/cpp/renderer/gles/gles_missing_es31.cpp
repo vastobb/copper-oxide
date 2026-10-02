@@ -13,9 +13,11 @@ namespace {
 // mean only the first resolution ever ran and the other slot stayed null.
 std::once_flag g_get_tex_image_once;
 std::once_flag g_get_buffer_sub_data_once;
+std::once_flag g_get_query_object_i64v_once;
 
 PFNCO_GLES_GETTEXIMAGE g_get_tex_image = nullptr;
 PFNCO_GLES_GETBUFFERSUBDATA g_get_buffer_sub_data = nullptr;
+PFNCO_GLES_GETQUERYOBJECTI64V g_get_query_object_i64v = nullptr;
 
 } // namespace
 
@@ -25,6 +27,14 @@ PFNCO_GLES_GETTEXIMAGE getTexImage() {
             reinterpret_cast<PFNCO_GLES_GETTEXIMAGE>(eglGetProcAddress("glGetTexImage"));
     });
     return g_get_tex_image;
+}
+
+PFNCO_GLES_GETQUERYOBJECTI64V getQueryObjecti64v() {
+    std::call_once(g_get_query_object_i64v_once, []() {
+        g_get_query_object_i64v = reinterpret_cast<PFNCO_GLES_GETQUERYOBJECTI64V>(
+            eglGetProcAddress("glGetQueryObjecti64v"));
+    });
+    return g_get_query_object_i64v;
 }
 
 PFNCO_GLES_GETBUFFERSUBDATA getBufferSubData() {

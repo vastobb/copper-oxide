@@ -191,7 +191,19 @@ void GLESCommandSink::bindDescriptorSets(uint32_t first_set,
         ++dropped_;
         return;
     }
-    state->bindDescriptorSet(first_set, descriptor_sets, dynamic_offsets);
+    // The base API binds one set at a time and takes that set's offsets
+    // separately, so the flat array Vulkan would receive is split here.
+    uint32_t offset_cursor = 0;
+    for (size_t i = 0; i < descriptor_sets.size(); ++i) {
+        const uint32_t remaining =
+            dynamic_offsets.size() > offset_cursor
+                ? static_cast<uint32_t>(dynamic_offsets.size() - offset_cursor)
+                : 0u;
+        const std::vector<uint32_t> slice(dynamic_offsets.begin() + offset_cursor,
+                                          dynamic_offsets.begin() + offset_cursor + remaining);
+        state->bindDescriptorSet(first_set + static_cast<uint32_t>(i), descriptor_sets[i], slice);
+        offset_cursor += remaining;
+    }
     state->applyState();
 }
 

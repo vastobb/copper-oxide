@@ -26,6 +26,14 @@
 #define GL_SHADER_BINARY_FORMAT_SPIR_V 0x9551
 #endif
 
+// Query object results. ES 3.0 core declares four glGetQueryObjectX[v] forms;
+// the header this build resolves provides only glGetQueryObjectuiv, which cannot
+// carry the 64-bit nanosecond value GL_TIME_ELAPSED_EXT reports. The 64-bit form
+// is therefore resolved at run time, with the declared 32-bit one as a
+// documented fallback.
+typedef void(KHRONOS_APIENTRY* PFNCO_GLES_GETQUERYOBJECTI64V)(GLuint id, GLenum pname,
+                                                              GLint64* params);
+
 // GL_ELEMENT_BUFFER is the index-buffer binding point. It shares its value with
 // the older GL_ELEMENT_ARRAY_BUFFER spelling, which is why it can be missing
 // from a header that defines the latter.
@@ -51,5 +59,6 @@ namespace copper::gles {
 // Null when the current context cannot reach the entry point.
 PFNCO_GLES_GETTEXIMAGE getTexImage();
 PFNCO_GLES_GETBUFFERSUBDATA getBufferSubData();
+PFNCO_GLES_GETQUERYOBJECTI64V getQueryObjecti64v();
 
 } // namespace copper::gles
