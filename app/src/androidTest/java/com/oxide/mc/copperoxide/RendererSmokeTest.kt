@@ -230,6 +230,19 @@ class RendererSmokeTest {
      *
      * Every step is checked for a real result rather than a non-null object.
      */
+    /**
+     * Traces a complete resource lifecycle through a real backend:
+     *
+     *   buffer:  create -> write -> bind -> draw -> destroy
+     *   texture: create -> upload -> destroy
+     *   shader:  compile (GLSL) -> link -> destroy
+     *
+     * Everything runs through [runOnRenderThread], because that is the only
+     * place a GL context is current and the only place the frame's command
+     * buffer is open. Calling the resource API from the test thread is not a
+     * valid usage: the driver discards such a call and reports failure with
+     * nothing else to go on.
+     */
     @Test
     fun bufferTextureAndDrawPathIsFunctional() {
         val instance = requireNotNull(renderer)
@@ -253,89 +266,95 @@ class RendererSmokeTest {
         vertices.position(0)
         vertices.get(vertexBytes)
 
-        val vertexBuffer = instance.createBuffer(vertexBytes.size.toLong(), CopperOxideRenderer.BufferUsage.Vertex)
-        assertTrue("vertex buffer creation failed", vertexBuffer.isValid)
-        try {
-            assertTrue(
-                "upload of ${vertexBytes.size} vertex bytes failed",
-                instance.updateBuffer(vertexBuffer, 0, vertexBytes),
-            )
-            assertTrue(
-                "a write past the end of the buffer must be rejected, not crash",
-                !instance.updateBuffer(vertexBuffer, vertexBytes.size.toLong() - 4L, ByteArray(64)),
-            )
-        } finally {
-            instance.destroyBuffer(vertexBuffer)
-        }
+        var bufferCreated = false
+        var bufferWritten = false
+        var oversizedWriteRejected = false
+        var textureCreated = false
+        var textureUploaded = false
+        var badMipRejected = false
+        var shaderCompiled = false
+        var pipelineCreated = false
+        var drawSubmitted = false
 
-        // A texture round-trip, including a deliberately out-of-bounds mip level
-        // that the manager must refuse rather than trust.
-        val texture = instance.createTexture2D(4, 4)
-        assertTrue("texture creation failed", texture.isValid)
-        try {
-            assertTrue(
-                "texture upload failed",
-                instance.uploadTexture(texture, 0, ByteArray(4 * 4 * 4) { 0x7F }),
+        val submitted = instance.runOnRenderThread {
+            // ---- buffer ----
+            val buffer = instance.createBuffer(
+                vertexBytes.size.toLong(),
+                CopperOxideRenderer.BufferUsage.Vertex,
             )
-            assertFalse(
-                "an out-of-range mip level must be refused",
-                instance.uploadTexture(texture, 31, ByteArray(16)),
-            )
-        } finally {
-            instance.destroyTexture(texture)
-        }
-
-        // Shader compilation. The OpenGL ES backend compiles GLSL directly; the
-        // Vulkan backend has no translator wired up and reports failure. Either
-        // answer is correct, but it must be deterministic and the failure path
-        // must not leave a dangling handle.
-        val vertexShader = instance.createShader(
-            CopperOxideRenderer.ShaderStage.Vertex,
-            VERTEX_SHADER,
-            arrayOf("#define COPPER_TEST 1"),
-        )
-        val fragmentShader = instance.createShader(CopperOxideRenderer.ShaderStage.Fragment, FRAGMENT_SHADER)
-
-        if (vertexShader.isValid && fragmentShader.isValid) {
-            val pipeline = instance.createGraphicsPipeline(vertexShader, fragmentShader)
-            assertTrue("pipeline creation failed for valid shaders", pipeline.isValid)
-            try {
-                val drawBuffer = instance.createBuffer(
-                    vertexBytes.size.toLong(),
-                    CopperOxideRenderer.BufferUsage.Vertex,
+            bufferCreated = buffer.isValid
+            if (buffer.isValid) {
+                bufferWritten = instance.updateBuffer(buffer, 0, vertexBytes)
+                oversizedWriteRejected = !instance.updateBuffer(
+                    buffer,
+                    vertexBytes.size.toLong() - 4L,
+                    ByteArray(64),
                 )
-                try {
-                    assertTrue(instance.updateBuffer(drawBuffer, 0, vertexBytes))
-                    instance.bindPipeline(pipeline)
-                    instance.bindVertexBuffer(0, drawBuffer)
-                    instance.setViewport(0f, 0f, 64f, 64f)
-                    instance.draw(vertexCount = 3)
-                    assertTrue(
-                        "the submitted draw must be counted",
-                        instance.getFrameStats().drawCalls >= 0,
-                    )
-                } finally {
-                    instance.destroyBuffer(drawBuffer)
-                }
-            } finally {
-                instance.destroyPipeline(pipeline)
+                instance.destroyBuffer(buffer)
             }
-        } else {
-            // On a backend without a shader compiler the handles must be zero,
-            // not a bogus non-zero id that later calls would treat as real.
-            assertFalse("a failed vertex shader must not produce a handle", vertexShader.isValid)
+
+            // ---- texture ----
+            val texture = instance.createTexture2D(4, 4)
+            textureCreated = texture.isValid
+            if (texture.isValid) {
+                textureUploaded = instance.uploadTexture(texture, 0, ByteArray(4 * 4 * 4) { 0x7F })
+                badMipRejected = !instance.uploadTexture(texture, 31, ByteArray(16))
+                instance.destroyTexture(texture)
+            }
+
+            // ---- shader and pipeline ----
+            val vertexShader = instance.createShader(
+                CopperOxideRenderer.ShaderStage.Vertex,
+                VERTEX_SHADER,
+                arrayOf("#define COPPER_TEST 1"),
+            )
+            val fragmentShader = instance.createShader(
+                CopperOxideRenderer.ShaderStage.Fragment,
+                FRAGMENT_SHADER,
+            )
+            shaderCompiled = vertexShader.isValid && fragmentShader.isValid
+            if (shaderCompiled) {
+                val pipeline = instance.createGraphicsPipeline(vertexShader, fragmentShader)
+                pipelineCreated = pipeline.isValid
+                if (pipeline.isValid) {
+                    val drawBuffer = instance.createBuffer(
+                        vertexBytes.size.toLong(),
+                        CopperOxideRenderer.BufferUsage.Vertex,
+                    )
+                    if (drawBuffer.isValid && instance.updateBuffer(drawBuffer, 0, vertexBytes)) {
+                        instance.bindPipeline(pipeline)
+                        instance.bindVertexBuffer(0, drawBuffer)
+                        instance.setViewport(0f, 0f, 64f, 64f)
+                        instance.draw(vertexCount = 3)
+                        drawSubmitted = true
+                    }
+                    instance.destroyBuffer(drawBuffer)
+                    instance.destroyPipeline(pipeline)
+                }
+            }
+            instance.destroyShader(vertexShader)
+            instance.destroyShader(fragmentShader)
+
+            // Malformed GLSL must fail on every backend rather than produce a
+            // handle. Checked on the render thread so the compile has a context.
+            val broken = instance.createShader(
+                CopperOxideRenderer.ShaderStage.Fragment,
+                "this is not glsl at all",
+            )
+            badMipRejected = badMipRejected && !broken.isValid
+            instance.destroyShader(broken)
         }
+        assertTrue("work submitted to the render thread did not run", submitted)
 
-        instance.destroyShader(vertexShader)
-        instance.destroyShader(fragmentShader)
-
-        // Invalid GLSL must fail on every backend rather than produce a handle.
-        val brokenShader = instance.createShader(
-            CopperOxideRenderer.ShaderStage.Fragment,
-            "this is not glsl at all",
-        )
-        assertFalse("malformed GLSL must not produce a shader handle", brokenShader.isValid)
-        instance.destroyShader(brokenShader)
+        assertTrue("vertex buffer creation failed", bufferCreated)
+        assertTrue("upload of ${vertexBytes.size} vertex bytes failed", bufferWritten)
+        assertTrue("a write past the end of the buffer must be rejected", oversizedWriteRejected)
+        assertTrue("texture creation failed", textureCreated)
+        assertTrue("texture upload failed", textureUploaded)
+        assertTrue("an out-of-range mip level and malformed GLSL must both be refused", badMipRejected)
+        assertTrue("GLSL did not compile on the render thread with the context current", shaderCompiled)
+        assertTrue("pipeline creation failed for valid shaders", pipelineCreated)
+        assertTrue("the draw was not submitted", drawSubmitted)
     }
 
     // -----------------------------------------------------------------------

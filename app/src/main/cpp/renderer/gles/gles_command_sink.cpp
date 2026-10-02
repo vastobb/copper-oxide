@@ -1,5 +1,7 @@
 #include "gles_command_buffer.h"
 
+#include <EGL/egl.h>
+
 #include "gles_shader_manager.h"
 #include "gles_state_manager.h"
 

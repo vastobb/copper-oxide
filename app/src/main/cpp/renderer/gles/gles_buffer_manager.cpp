@@ -78,13 +78,19 @@ bool GLESBufferManager::contextAvailable() const {
         // Constructed without a renderer (unit tests): no GL call is legal.
         return false;
     }
-    // GLESCRenderer::make_current() refuses to bind without a surface, and a GL
-    // call on a thread without a current context is undefined, so both are
-    // required before touching GL.
     if (renderer_->get_egl_context() == EGL_NO_CONTEXT) {
         return false;
     }
-    return renderer_->get_egl_surface() != EGL_NO_SURFACE;
+    if (renderer_->get_egl_surface() == EGL_NO_SURFACE) {
+        return false;
+    }
+    // The check that matters, and the one that was missing: the context has to
+    // be current on THIS thread. A GL call from any other thread is undefined
+    // behaviour - the driver silently discards it and glGenBuffers reports
+    // failure with no other explanation - and the context is current on exactly
+    // one thread, the render thread. Callers must therefore submit work through
+    // the renderer rather than issuing GL themselves.
+    return eglGetCurrentContext() == renderer_->get_egl_context();
 }
 
 GLenum GLESBufferManager::glTargetForUsage(uint32_t usage) {

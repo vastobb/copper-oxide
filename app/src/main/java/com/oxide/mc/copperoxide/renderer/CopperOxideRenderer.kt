@@ -12,6 +12,9 @@ import androidx.lifecycle.LifecycleObserver
 import androidx.lifecycle.OnLifecycleEvent
 import android.os.Handler
 import android.os.Looper
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * Copper Oxide Renderer - High-performance Minecraft Java Edition rendering translation layer
@@ -71,6 +74,18 @@ open class CopperOxideRenderer(
 
     @Volatile
     private var renderLoopRunning = false
+
+    // Work submitted by other threads to run inside the frame, on the render
+    // thread, with the graphics context current. This is not a convenience: a
+    // GL call from any other thread is undefined behaviour, and on Vulkan the
+    // frame's command buffer is only open between beginFrame and endFrame. A
+    // renderer that owns a context has to offer a way to use it.
+    private val renderWork = LinkedBlockingQueue<RenderTask>()
+
+    private class RenderTask(
+        val block: () -> Unit,
+        val done: CompletableFuture<Unit>,
+    )
     private var lastStatsEmitNanos = 0L
     private var targetFps = config.targetFps
     private var frameTimeNanos = 1_000_000_000L / config.targetFps.coerceAtLeast(1)
@@ -178,8 +193,19 @@ open class CopperOxideRenderer(
                     // Render frame here - this is where Minecraft would submit draw calls
                     onRenderFrame()
 
+                    // Submitted work runs here, inside the frame and with the
+                    // context current.
+                    drainRenderWork()
+
                     nativeEndFrame()
                     nativePresent()
+                } else {
+                    // The backend could not acquire an image. Work submitted for
+                    // this frame is still run, so a caller waiting on it is not
+                    // left blocked until the next successful acquire; the GL
+                    // managers refuse the calls instead of issuing them with no
+                    // context current.
+                    drainRenderWork()
                 }
 
                 // Frame pacing
@@ -212,6 +238,60 @@ open class CopperOxideRenderer(
             }
         } finally {
             renderLoopRunning = false
+        }
+    }
+
+    /**
+     * Runs [block] on the render thread, inside a frame, with the graphics
+     * context current, and returns once it has finished.
+     *
+     * Every resource creation and draw call must go through this. On OpenGL ES a
+     * call from any other thread is undefined behaviour, and on Vulkan the command
+     * buffer the frame is recorded into only exists between beginFrame and
+     * endFrame. A renderer that owns a context has to offer a way to use it.
+     *
+     * Returns false if the renderer is not running or the block did not complete
+     * within [timeoutMs]. A block that throws reports false rather than
+     * propagating: the alternative is taking the render thread, and every
+     * subsequent frame, down with it.
+     */
+    @androidx.annotation.WorkerThread
+    fun runOnRenderThread(timeoutMs: Long = 5_000L, block: () -> Unit): Boolean {
+        val thread = renderThread
+        if (thread == null || !renderLoopRunning) {
+            Log.w(TAG, "runOnRenderThread: the render thread is not running")
+            return false
+        }
+        val done = CompletableFuture<Unit>()
+        if (!renderWork.offer(RenderTask(block, done), timeoutMs, TimeUnit.MILLISECONDS)) {
+            Log.w(TAG, "runOnRenderThread: the render thread did not accept work within ${timeoutMs}ms")
+            return false
+        }
+        return try {
+            done.get(timeoutMs, TimeUnit.MILLISECONDS)
+            true
+        } catch (e: InterruptedException) {
+            // Restore the flag so the caller's own interrupt handling still sees it.
+            Thread.currentThread().interrupt()
+            false
+        } catch (e: Exception) {
+            Log.e(TAG, "runOnRenderThread: the block did not complete", e)
+            false
+        }
+    }
+
+    private fun drainRenderWork() {
+        while (true) {
+            val task = renderWork.poll() ?: return
+            try {
+                task.block()
+                task.done.complete(Unit)
+            } catch (t: Throwable) {
+                // The block runs on the render thread; letting it escape would
+                // kill the loop and every frame after it.
+                Log.e(TAG, "render thread task failed", t)
+                task.done.completeExceptionally(t)
+            }
         }
     }
 
@@ -355,6 +435,8 @@ open class CopperOxideRenderer(
         // destroyed renderer, and the EGL context would be released while the
         // thread that owns it is still running.
         renderLoopRunning = false
+        // Unblock anything waiting on submitted work; it will never run now.
+        renderWork.clear()
         val thread = renderThread
         renderThread = null
         if (thread != null) {
