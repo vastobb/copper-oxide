@@ -109,15 +109,17 @@ bool SyncManager::waitFence(uint64_t handle, uint64_t timeout_ns) {
     }
 
     std::unique_lock<std::mutex> lock(*fence->mutex);
-    if (fence->signaled) {
+    if (fence->signaled && onWaitFence(handle, 0)) {
         return true;
     }
     if (timeout_ns == 0) {
-        return false;
-    }
-    return fence->cv->wait_for(lock, std::chrono::nanoseconds(timeout_ns), [&]() {
         return fence->signaled;
-    });
+    }
+    const bool host_signaled =
+        fence->cv->wait_for(lock, std::chrono::nanoseconds(timeout_ns), [&]() { return fence->signaled; });
+    // The host flag and the driver's view of the fence can disagree, so ask the
+    // backend as well: only it knows whether the GPU actually finished.
+    return host_signaled || onWaitFence(handle, 0);
 }
 
 void SyncManager::signalFence(uint64_t handle) {

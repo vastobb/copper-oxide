@@ -74,11 +74,6 @@ bool GLESCRenderer::initialize(const RendererConfig& config) {
         destroy_egl();
         return false;
     }
-    if (!initializeManagers()) {
-        destroy_egl();
-        RendererBase::shutdown();
-        return false;
-    }
     if (!apply_driver_workarounds()) {
         destroy_egl();
         RendererBase::shutdown();
@@ -139,18 +134,38 @@ void GLESCRenderer::shutdown() {
         }
         was_initialized = initialized_;
         initialized_ = false;
+    }
+
+    if (was_initialized) {
+        // Ordering matters twice over:
+        //
+        //  * Outside frame_mutex_, because RendererBase::shutdown() calls
+        //    waitIdle(), which takes frame_mutex_ again.
+        //  * Before destroy_egl(), because the managers own GL objects and their
+        //    destructors issue glDelete*. Tearing the context down first would
+        //    leave every GL name leaked against a dead context.
+        RendererBase::shutdown();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(frame_mutex_);
+        // The sink and the profiler must not try to issue GL calls against a
+        // context that is about to disappear.
+        if (command_sink_ != nullptr) {
+            command_sink_->setContextAvailable(false);
+        }
+        if (auto* profiler = dynamic_cast<GLESCProfiler*>(getProfiler())) {
+            profiler->setContextAvailable(false);
+        }
+        // Owned by this renderer, not by the manager set, so it is released here
+        // rather than by RendererBase::destroyManagers().
+        command_sink_.reset();
         destroy_egl();
     }
 
     if (native_window_) {
         ANativeWindow_release(native_window_);
         native_window_ = nullptr;
-    }
-
-    if (was_initialized) {
-        // Must run outside frame_mutex_: RendererBase::shutdown() calls
-        // waitIdle(), which takes frame_mutex_ again.
-        RendererBase::shutdown();
     }
 }
 
@@ -438,7 +453,16 @@ bool GLESCRenderer::make_current() {
     if (egl_surface_ == EGL_NO_SURFACE) {
         return false;
     }
-    return eglMakeCurrent(egl_display_, egl_surface_, egl_surface_, egl_context_) == EGL_TRUE;
+    const bool ok = eglMakeCurrent(egl_display_, egl_surface_, egl_surface_, egl_context_) == EGL_TRUE;
+    // The command sink and the profiler only issue GL calls between these two
+    // points; nothing else knows whether the context is current on this thread.
+    if (command_sink_ != nullptr) {
+        command_sink_->setContextAvailable(ok);
+    }
+    if (auto* profiler = dynamic_cast<GLESCProfiler*>(getProfiler())) {
+        profiler->setContextAvailable(ok);
+    }
+    return ok;
 }
 
 bool GLESCRenderer::onBeginFrame() {
@@ -583,11 +607,74 @@ void GLESCRenderer::onOptimizeForGPU(GPUVendor vendor, GPUArchitecture arch) {
     (void)arch;
 }
 
-bool GLESCRenderer::initializeManagers() {
-    // Manager creation is wired up by the backend-specific manager factories.
-    // Until those exist the base-class managers stay null, which the render
-    // loop tolerates because no draw commands can be submitted without a
-    // surface-owned context anyway.
+std::unique_ptr<Profiler> GLESCRenderer::createProfiler() {
+    auto profiler = std::make_unique<GLESCProfiler>();
+    profiler->enableGpuTimerQueries(this);
+    return profiler;
+}
+
+std::unique_ptr<SyncManager> GLESCRenderer::createSyncManager() {
+    return std::make_unique<GLESCSyncManager>();
+}
+
+std::unique_ptr<ResourcePool> GLESCRenderer::createResourcePool() {
+    auto pool = std::make_unique<GLESCResourcePool>();
+    pool->setRenderer(this);
+    return pool;
+}
+
+std::unique_ptr<CommandBuffer> GLESCRenderer::createCommandBuffer(uint32_t frame_index) {
+    (void)frame_index;
+    // One command buffer per frame slot, but OpenGL ES has no command buffer
+    // object: the backend issues the calls immediately through the sink, so the
+    // slot only exists to keep the per-frame lifecycle separate.
+    return std::make_unique<GLESCCommandBuffer>();
+}
+
+bool GLESCRenderer::initializeBackendManagers() {
+    // Every GLES manager resolves an opaque handle id back to the GL object by
+    // asking the owning manager (handles are manager-local, so casting a handle
+    // to a GLuint would silently bind the wrong name). They reach the owning
+    // manager through RendererBase's accessors, so registration order only
+    // matters in that the base publishes each manager before the next is built.
+    auto buffer_manager = std::make_unique<GLESBufferManager>(this);
+    auto texture_manager = std::make_unique<GLESCTextureManager>(this);
+    auto shader_manager = std::make_unique<GLESShaderManager>(this);
+    auto framebuffer_manager = std::make_unique<GLESCFramebufferManager>(this);
+    auto state_manager = std::make_unique<GLESCStateManager>(this);
+
+    if (!registerBufferManager(std::move(buffer_manager)) ||
+        !registerTextureManager(std::move(texture_manager)) ||
+        !registerShaderManager(std::move(shader_manager)) ||
+        !registerFramebufferManager(std::move(framebuffer_manager))) {
+        return false;
+    }
+
+    // The sink owns every GL call the frame's recorded commands turn into, so it
+    // needs the state manager that owns program/binding state.
+    command_sink_ = std::make_unique<GLESCommandSink>();
+    command_sink_->setStateManager(state_manager.get());
+    command_sink_->setProfiler(getProfiler());
+
+    if (!registerStateManager(std::move(state_manager))) {
+        return false;
+    }
+
+    return refreshCommandBufferSinks();
+}
+
+bool GLESCRenderer::refreshCommandBufferSinks() {
+    if (command_sink_ == nullptr) {
+        return false;
+    }
+    for (uint32_t frame = 0; frame < config_.maxFramesInFlight; ++frame) {
+        if (CommandBuffer* command_buffer = acquireCommandBuffer(frame)) {
+            command_buffer->setCommandSink(command_sink_.get());
+        }
+    }
+    // make_current() has already run by this point, so mirror its result.
+    command_sink_->setContextAvailable(egl_context_ != EGL_NO_CONTEXT &&
+                                       egl_surface_ != EGL_NO_SURFACE);
     return true;
 }
 

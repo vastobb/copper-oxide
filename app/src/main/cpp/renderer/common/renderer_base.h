@@ -201,6 +201,13 @@ public:
     virtual void present();
 
     // Resource management
+    //
+    // All of these return nullptr until initialize() has succeeded and
+    // nullptr again after shutdown(); after a successful initialize() every
+    // one of them is non-null (that is what the base validates before it
+    // reports success). The returned pointers are owned by the renderer and
+    // are stable for as long as the manager exists, so they may be cached by
+    // the caller - but not across shutdown().
     virtual BufferManager* getBufferManager();
     virtual TextureManager* getTextureManager();
     virtual ShaderManager* getShaderManager();
@@ -210,6 +217,20 @@ public:
     virtual SyncManager* getSyncManager();
     virtual ResourcePool* getResourcePool();
     virtual Profiler* getProfiler();
+
+    // Frame-index plumbing. RENDER THREAD ONLY: the frame index selects the
+    // per-frame command buffer slot and may only be advanced from the thread
+    // that runs beginFrame()/endFrame(). It is stored under the renderer
+    // mutex only so that reads from the render loop cannot tear, not to make
+    // cross-thread use legal.
+    void setFrameIndex(uint32_t frame_index);
+    uint32_t frameIndex() const;
+
+    // Returns the command buffer for `frame_index`, creating it on first use
+    // through createCommandBuffer(). nullptr when the renderer is not
+    // initialized or the backend has no usable command buffer factory.
+    // Render-thread only (see above).
+    CommandBuffer* acquireCommandBuffer(uint32_t frame_index);
 
     // Configuration & info
     virtual const RendererConfig& getConfig() const;
@@ -259,7 +280,11 @@ public:
     void optimizeForGPU(GPUVendor vendor, GPUArchitecture arch);
     virtual void onApplyGPUWorkarounds(GPUVendor vendor, GPUArchitecture arch) = 0;
     virtual void onOptimizeForGPU(GPUVendor vendor, GPUArchitecture arch) = 0;
-    virtual bool initializeManagers() = 0;
+    // NOTE: manager creation is deliberately NOT in this list. It used to be
+    // `virtual bool initializeManagers() = 0`, which every backend answered
+    // with `return true` while creating nothing, so every getXManager()
+    // accessor stayed null. The base now owns that work - see
+    // createManagers()/initializeBackendManagers() below.
     virtual bool onBeginFrame() = 0;
     virtual void onEndFrame() = 0;
     virtual void onPresent() = 0;
@@ -272,8 +297,113 @@ public:
     virtual void reduceQuality() = 0;
 
 protected:
+    // =====================================================================
+    // Manager lifecycle
+    //
+    // The base owns the ordering, the validation and the rollback so that no
+    // backend can half-initialise the renderer. initialize() runs this
+    // sequence once, before reporting success:
+    //
+    //   1. createManagers()  - the shared, backend-agnostic managers:
+    //                          Profiler, SyncManager, ResourcePool (through the
+    //                          create*() factories) plus one CommandBuffer per
+    //                          frame slot, owned by the base
+    //   2. validate          - the shared set is complete and usable
+    //   3. initializeBackendManagers() - the backend constructs and registers
+    //                          the managers that need its API hooks
+    //                          (Buffer/Texture/Shader/State/Framebuffer)
+    //   4. validate          - the complete set is present
+    //   5. on any failure    - destroyManagers() tears down everything created
+    //                          so far, in reverse dependency order, and
+    //                          initialize() returns false
+    //
+    // Because step 5 runs inside initialize(), a failed initialization leaves
+    // no manager behind and the backend can simply report failure.
+    // =====================================================================
+
+    // Non-virtual on purpose: this is the single entry point.
+    bool createManagers();
+
+    // Non-virtual teardown, in reverse dependency order:
+    //
+    //   command buffers -> StateManager -> FramebufferManager -> ResourcePool
+    //   -> ShaderManager -> TextureManager -> BufferManager -> SyncManager
+    //   -> Profiler
+    //
+    // The command buffers go first because recorded commands reference every
+    // resource below them; StateManager before the managers that own the
+    // objects it has bound; FramebufferManager before TextureManager because
+    // framebuffers reference texture image views; ResourcePool before
+    // Buffer/TextureManager because it frees pooled resources through their
+    // hooks; Profiler last because it owns no GPU object.
+    //
+    // Teardown is the destructor of the concrete manager: the manager
+    // interfaces have defaulted destructors and the backends own the
+    // GL/Vk objects, so shutdown() is deliberately NOT called here (it would
+    // run the onDestroy* hooks a second time).
+    //
+    // Also clears `initialized`, so a beginFrame()/acquireCommandBuffer() that
+    // races with shutdown() gets a clean nullptr instead of a half-destroyed
+    // manager. Safe to call twice; the backends never have to.
+    bool destroyManagers();
+
+    // Backend hook (step 3). Called once, after the shared managers exist and
+    // before the final validation, so it may use getSyncManager() and friends.
+    // Override it to create the managers that cannot be built by the base:
+    //   return registerBufferManager(std::make_unique<MyBufferManager>(this))
+    //       && registerTextureManager(...)
+    //       && ...;
+    // Returning false aborts initialization and destroys everything.
+    // Default: true - a backend that registers nothing is rejected by the
+    // validation step instead.
+    virtual bool initializeBackendManagers();
+
+    // Factories for the managers the base owns. These interfaces are abstract
+    // (each has pure-virtual backend hooks), so a backend MUST override these
+    // three; returning nullptr is a hard initialization failure with a logged
+    // error, never a silently null accessor.
+    virtual std::unique_ptr<Profiler> createProfiler();
+    virtual std::unique_ptr<SyncManager> createSyncManager();
+    virtual std::unique_ptr<ResourcePool> createResourcePool();
+
+    // Factory for the per-frame command buffers the base owns. Called once per
+    // frame slot from createManagers() and again from acquireCommandBuffer()
+    // for a slot that is still empty. Default: nullptr, i.e. the renderer
+    // runs without command buffers until a backend provides them (which fails
+    // initialization, since createManagers() needs one command buffer per
+    // frame slot to exist).
+    virtual std::unique_ptr<CommandBuffer> createCommandBuffer(uint32_t frame_index);
+
+    // Ownership transfer for the backend-created managers. Each takes a
+    // unique_ptr, calls manager->initialize(this) and stores it in the
+    // base-owned slot. Returns false - without storing or leaking anything -
+    // if the pointer is null, if the slot is already filled, or if
+    // initialize() fails. Propagate the false out of
+    // initializeBackendManagers().
+    bool registerBufferManager(std::unique_ptr<BufferManager> manager);
+    bool registerTextureManager(std::unique_ptr<TextureManager> manager);
+    bool registerShaderManager(std::unique_ptr<ShaderManager> manager);
+    bool registerFramebufferManager(std::unique_ptr<FramebufferManager> manager);
+    bool registerStateManager(std::unique_ptr<StateManager> manager);
+
     struct Impl;
     std::unique_ptr<Impl> pImpl;
+
+private:
+    // Shared implementation of registerXManager(): null check, double
+    // registration check, initialize(this), store. Defined in the .cpp.
+    template <typename Manager>
+    bool registerManager(std::unique_ptr<Manager>& slot,
+                         std::unique_ptr<Manager> manager,
+                         const char* name);
+
+    // Logs `reason`, destroys everything created so far and returns false, so
+    // every failure path in createManagers() reads as one line.
+    bool failManagerCreation(const char* reason);
+
+    // Steps 2 and 4: the manager set must be complete. A successful
+    // initialize() therefore guarantees every accessor is non-null.
+    bool validateManagers() const;
 };
 
 using RendererFactory = std::function<std::unique_ptr<RendererBase>()>;

@@ -51,7 +51,7 @@ open class CopperOxideRenderer(
     private var nativeHandle: Long = 0
 
     @Volatile
-    private var isInitialized = false
+    private var initialized = false
 
     @Volatile
     private var currentBackend = RendererBackend.UNKNOWN
@@ -87,7 +87,7 @@ open class CopperOxideRenderer(
      * Initialize the renderer with a surface
      */
     fun initialize(surface: Surface): Boolean {
-        if (isInitialized) {
+        if (initialized) {
             Log.w(TAG, "Renderer already initialized")
             return true
         }
@@ -130,7 +130,7 @@ open class CopperOxideRenderer(
         )
 
         if (result) {
-            isInitialized = true
+            initialized = true
             currentBackend = RendererBackend.entries.getOrElse(nativeGetBackend()) { RendererBackend.UNKNOWN }
             Log.i(TAG, "Renderer initialized with backend: $currentBackend")
             startRenderLoop()
@@ -147,7 +147,7 @@ open class CopperOxideRenderer(
      */
     private fun startRenderLoop() {
         renderJob = renderScope.launch {
-            while (isInitialized && !Thread.currentThread().isInterrupted) {
+            while (initialized && !Thread.currentThread().isInterrupted) {
                 val frameStart = System.nanoTime()
 
                 if (nativeBeginFrame()) {
@@ -192,6 +192,14 @@ open class CopperOxideRenderer(
     protected open fun onRenderFrame() {
         // Submit Minecraft draw commands here
     }
+
+    /**
+     * True between a successful [initialize] and [shutdown].
+     *
+     * Reads a @Volatile flag rather than calling into native code, so it is safe
+     * to use from a test or lifecycle callback on another thread.
+     */
+    fun isInitialized(): Boolean = initialized
 
     /**
      * Get current frame statistics
@@ -323,9 +331,9 @@ open class CopperOxideRenderer(
                 withTimeoutOrNull(2000L) { job.join() }
             }
         }
-        if (isInitialized) {
+        if (initialized) {
             nativeShutdown()
-            isInitialized = false
+            initialized = false
             Log.i(TAG, "Renderer shutdown")
         }
     }
@@ -403,6 +411,252 @@ open class CopperOxideRenderer(
     // Feature queries
     external private fun nativeSupportsFeature(feature: Int): Boolean
     external private fun nativeIsExtensionSupported(extension: String): Boolean
+
+    // -----------------------------------------------------------------------
+    // Manager system. nativeAreManagersReady is the honest check that the
+    // backend finished wiring its managers; every accessor below degrades
+    // safely when it returns false rather than pretending to have succeeded.
+    // -----------------------------------------------------------------------
+    external private fun nativeAreManagersReady(): Boolean
+
+    external private fun nativeCreateBuffer(size: Long, usage: Int): Long
+    external private fun nativeDestroyBuffer(handle: Long)
+    external private fun nativeUpdateBuffer(handle: Long, offset: Long, data: ByteArray): Boolean
+
+    external private fun nativeCreateTexture2D(
+        width: Int,
+        height: Int,
+        format: Int,
+        usage: Int,
+        mipLevels: Int
+    ): Long
+    external private fun nativeUploadTexture(
+        handle: Long,
+        mipLevel: Int,
+        data: ByteArray
+    ): Boolean
+    external private fun nativeDestroyTexture(handle: Long)
+
+    external private fun nativeCreateShader(stage: Int, source: String, defines: Array<String>): Long
+    external private fun nativeDestroyShader(handle: Long)
+    external private fun nativeCreateGraphicsPipeline(vertexShader: Long, fragmentShader: Long): Long
+    external private fun nativeDestroyPipeline(handle: Long)
+
+    external private fun nativeBindPipeline(pipeline: Long)
+    external private fun nativeBindVertexBuffers(firstBinding: Int, buffers: LongArray, offsets: IntArray)
+    external private fun nativeBindIndexBuffer(buffer: Long, indexType: Int)
+    external private fun nativeSetViewport(x: Float, y: Float, width: Float, height: Float)
+    external private fun nativeSetScissor(x: Int, y: Int, width: Int, height: Int)
+    external private fun nativeBindFramebuffer(framebuffer: Long)
+    external private fun nativeDraw(
+        vertexCount: Int,
+        instanceCount: Int,
+        firstVertex: Int,
+        firstInstance: Int
+    )
+    external private fun nativeDrawIndexed(
+        indexCount: Int,
+        instanceCount: Int,
+        firstIndex: Int,
+        vertexOffset: Int,
+        firstInstance: Int
+    )
+
+    // -----------------------------------------------------------------------
+    // Resource lifetime
+    // -----------------------------------------------------------------------
+
+    /** True once the backend has constructed every manager the draw path needs. */
+    fun areManagersReady(): Boolean = nativeAreManagersReady()
+
+    /** Resets the per-frame counters reported by [getFrameTimeMs] and friends. */
+    fun resetFrameStats() = nativeResetFrameStats()
+
+    /**
+     * Opaque handle to a GPU resource. Zero means the resource could not be
+     * created; every method below treats zero as a no-op instead of crashing.
+     */
+    class ResourceHandle internal constructor(@JvmField val value: Long) {
+        val isValid: Boolean get() = value != 0L
+
+        override fun toString(): String = "ResourceHandle(0x${java.lang.Long.toHexString(value)})"
+    }
+
+    /**
+     * Buffer usage flags. These map to the backend's own constants, which differ
+     * between OpenGL ES and Vulkan; passing the same value works on both.
+     */
+    object BufferUsage {
+        const val NONE = 0
+        const val VERTEX = 1
+        const val INDEX = 2
+        const val UNIFORM = 4
+        const val STORAGE = 8
+        const val TRANSFER_SRC = 16
+        const val TRANSFER_DST = 32
+        const val INDIRECT = 64
+
+        fun of(vararg flags: Int): Int = flags.fold(0) { acc, flag -> acc or flag }
+    }
+
+    /** Texture format constants, matching [BufferUsage] in spirit. */
+    object TextureFormat {
+        const val NONE = 0
+        const val R8 = 1
+        const val RG8 = 2
+        const val RGB8 = 3
+        const val RGBA8 = 4
+        const val SRGB8_ALPHA8 = 5
+        const val RGBA16F = 8
+        const val R32F = 10
+        const val RGBA32F = 13
+        const val DEPTH16 = 16
+        const val DEPTH24_STENCIL8 = 19
+        const val ASTC_4x4 = 24
+        const val ETC2_RGBA8 = 36
+    }
+
+    /** Texture usage flags. */
+    object TextureUsage {
+        const val NONE = 0
+        const val SAMPLED = 1
+        const val COLOR_ATTACHMENT = 2
+        const val DEPTH_ATTACHMENT = 4
+        const val STORAGE = 8
+    }
+
+    /** Shader stage, matching the native `ShaderStage` enum ordinal. */
+    object ShaderStage {
+        const val VERTEX = 0
+        const val FRAGMENT = 1
+        const val COMPUTE = 2
+        const val GEOMETRY = 3
+    }
+
+    /** Index width passed to [bindIndexBuffer] and [drawIndexed]. */
+    object IndexType {
+        const val UINT16 = 0
+        const val UINT32 = 1
+    }
+
+    // -----------------------------------------------------------------------
+    // Resource lifetime
+    // -----------------------------------------------------------------------
+
+    /**
+     * Creates a GPU buffer.
+     *
+     * Returns an invalid handle when the renderer is not initialized or the
+     * backend has no buffer manager, so a caller that forgets to check
+     * [isInitialized] degrades to "nothing is drawn" rather than a crash.
+     */
+    fun createBuffer(sizeBytes: Long, usage: Int): ResourceHandle {
+        require(sizeBytes > 0) { "sizeBytes must be positive, was $sizeBytes" }
+        return ResourceHandle(nativeCreateBuffer(sizeBytes, usage))
+    }
+
+    fun destroyBuffer(buffer: ResourceHandle) {
+        if (buffer.isValid) nativeDestroyBuffer(buffer.value)
+    }
+
+    /** Uploads [data] to [buffer] at [offset]. */
+    fun updateBuffer(buffer: ResourceHandle, offset: Long, data: ByteArray): Boolean {
+        if (!buffer.isValid || data.isEmpty()) return false
+        return nativeUpdateBuffer(buffer.value, offset, data)
+    }
+
+    /** Creates a 2D texture. Returns an invalid handle when creation fails. */
+    fun createTexture2D(
+        width: Int,
+        height: Int,
+        format: Int = TextureFormat.RGBA8,
+        usage: Int = TextureUsage.SAMPLED,
+        mipLevels: Int = 1
+    ): ResourceHandle {
+        require(width > 0 && height > 0) { "texture extent must be positive" }
+        return ResourceHandle(nativeCreateTexture2D(width, height, format, usage, mipLevels))
+    }
+
+    /** Uploads tightly packed pixels to one mip level of [texture]. */
+    fun uploadTexture(texture: ResourceHandle, mipLevel: Int, data: ByteArray): Boolean {
+        if (!texture.isValid || data.isEmpty()) return false
+        return nativeUploadTexture(texture.value, mipLevel, data)
+    }
+
+    fun destroyTexture(texture: ResourceHandle) {
+        if (texture.isValid) nativeDestroyTexture(texture.value)
+    }
+
+    /**
+     * Compiles [source] as a GLSL shader for [stage].
+     *
+     * Returns an invalid handle when the source does not compile or the backend
+     * has no shader compiler. The OpenGL ES backend compiles GLSL directly; the
+     * Vulkan backend has no translator wired up yet and reports failure instead
+     * of pretending to have produced a module.
+     */
+    fun createShader(stage: Int, source: String, defines: Array<String> = emptyArray()): ResourceHandle =
+        ResourceHandle(nativeCreateShader(stage, source, defines))
+
+    fun destroyShader(shader: ResourceHandle) {
+        if (shader.isValid) nativeDestroyShader(shader.value)
+    }
+
+    /**
+     * Creates a pipeline from an existing vertex and fragment shader.
+     *
+     * On Vulkan this is a real `VkPipeline`; on OpenGL ES, which has no pipeline
+     * objects, it is a linked `GLuint` program. The caller API is the same.
+     */
+    fun createGraphicsPipeline(vertexShader: ResourceHandle, fragmentShader: ResourceHandle): ResourceHandle =
+        ResourceHandle(nativeCreateGraphicsPipeline(vertexShader.value, fragmentShader.value))
+
+    fun destroyPipeline(pipeline: ResourceHandle) {
+        if (pipeline.isValid) nativeDestroyPipeline(pipeline.value)
+    }
+
+    // -----------------------------------------------------------------------
+    // Recording
+    // -----------------------------------------------------------------------
+
+    fun bindPipeline(pipeline: ResourceHandle) = nativeBindPipeline(pipeline.value)
+
+    fun bindVertexBuffer(binding: Int, buffer: ResourceHandle, offset: Int = 0) =
+        nativeBindVertexBuffers(binding, longArrayOf(buffer.value), intArrayOf(offset))
+
+    fun bindVertexBuffers(
+        buffers: LongArray,
+        offsets: IntArray = IntArray(buffers.size),
+        firstBinding: Int = 0
+    ) {
+        require(buffers.size == offsets.size) { "buffers and offsets must be the same length" }
+        nativeBindVertexBuffers(firstBinding, buffers, offsets)
+    }
+
+    fun bindIndexBuffer(buffer: ResourceHandle, indexType: Int = IndexType.UINT16) =
+        nativeBindIndexBuffer(buffer.value, indexType)
+
+    fun setViewport(x: Float, y: Float, width: Float, height: Float) =
+        nativeSetViewport(x, y, width, height)
+
+    fun setScissor(x: Int, y: Int, width: Int, height: Int) = nativeSetScissor(x, y, width, height)
+
+    fun bindFramebuffer(framebuffer: ResourceHandle) = nativeBindFramebuffer(framebuffer.value)
+
+    fun draw(
+        vertexCount: Int,
+        instanceCount: Int = 1,
+        firstVertex: Int = 0,
+        firstInstance: Int = 0
+    ) = nativeDraw(vertexCount, instanceCount, firstVertex, firstInstance)
+
+    fun drawIndexed(
+        indexCount: Int,
+        instanceCount: Int = 1,
+        firstIndex: Int = 0,
+        vertexOffset: Int = 0,
+        firstInstance: Int = 0
+    ) = nativeDrawIndexed(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)
 }
 
 /**
@@ -461,7 +715,52 @@ data class RendererConfig(
             enableProfiling = true,
             targetFps = 60
         )
+        val Release = RendererConfig(
+            enableValidation = false,
+            enableDebugMarkers = false,
+            enableProfiling = true,
+            targetFps = 60
+        )
     }
+
+    /**
+     * True when every value is in a range the native side can honour.
+     *
+     * Native `RendererConfig::validate` performs the same check, so a config that
+     * passes here is one the C++ layer will not reject at initialize time.
+     */
+    fun validate(): Boolean =
+        maxFramesInFlight in 1..8 &&
+            maxCommandBuffersPerFrame in 1..1024 &&
+            maxDescriptorSets in 1..1_000_000 &&
+            maxPushConstantsSize in 1..4096 &&
+            textureCacheSizeMb in 0..8192 &&
+            shaderCacheSizeMb in 0..8192 &&
+            bufferPoolSizeMb in 0..8192 &&
+            frameTimeoutMs in 1..120_000 &&
+            targetFps in 1..240 &&
+            thermalThrottleThreshold in 0.0f..1.0f
+
+    /**
+     * Returns a copy with every out-of-range value moved back into range.
+     *
+     * Clamping rather than rejecting is deliberate: a caller that builds a config
+     * from device properties can hand over nonsense, and refusing to start is a
+     * worse failure than starting with a safe value. [validate] still gates, so
+     * a config that was never clamped is still rejected.
+     */
+    fun clampToValidRanges(): RendererConfig = copy(
+        maxFramesInFlight = maxFramesInFlight.coerceIn(1, 8),
+        maxCommandBuffersPerFrame = maxCommandBuffersPerFrame.coerceIn(1, 1024),
+        maxDescriptorSets = maxDescriptorSets.coerceIn(1, 1_000_000),
+        maxPushConstantsSize = maxPushConstantsSize.coerceIn(1, 4096),
+        textureCacheSizeMb = textureCacheSizeMb.coerceIn(0, 8192),
+        shaderCacheSizeMb = shaderCacheSizeMb.coerceIn(0, 8192),
+        bufferPoolSizeMb = bufferPoolSizeMb.coerceIn(0, 8192),
+        frameTimeoutMs = frameTimeoutMs.coerceIn(1, 120_000),
+        targetFps = targetFps.coerceIn(1, 240),
+        thermalThrottleThreshold = thermalThrottleThreshold.coerceIn(0.0f, 1.0f)
+    )
 }
 
 /**

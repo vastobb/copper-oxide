@@ -3,13 +3,20 @@
 #include "gles_renderer.h"
 #include "renderer_config.h"
 #include "gpu_capabilities.h"
+#include "buffer_manager.h"
+#include "texture_manager.h"
+#include "shader_manager.h"
+#include "state_manager.h"
+#include "command_buffer.h"
 
 #include <jni.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
 #include <android/log.h>
+#include <array>
 #include <mutex>
 #include <memory>
+#include <vector>
 
 #define LOG_TAG "CopperOxide-JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -45,6 +52,9 @@ JNIEnv* getJNIEnv() {
 }
 
 RendererBase* getRenderer() {
+    // Kept for source compatibility with existing call sites. Callers that
+    // then use the returned pointer for more than one operation should
+    // prefer RendererGuard, which keeps the renderer alive for the call.
     std::lock_guard<std::mutex> lock(g_renderer_mutex);
     return g_renderer.get();
 }
@@ -53,6 +63,35 @@ void setRenderer(std::unique_ptr<RendererBase> renderer) {
     std::lock_guard<std::mutex> lock(g_renderer_mutex);
     g_renderer = std::move(renderer);
 }
+
+namespace {
+
+// StateManager stores at most this many vertex binding slots; a higher binding
+// index would be silently dropped by the array it writes into.
+constexpr uint32_t kMaxVertexBindings = 16;
+
+// Holds the renderer alive for the duration of one JNI call. Shutdown() can
+// otherwise destroy the renderer between getRenderer() and the caller's
+// first use, which is a use-after-free.
+class RendererGuard {
+public:
+    RendererGuard() {
+        g_renderer_mutex.lock();
+        renderer_ = g_renderer.get();
+    }
+    ~RendererGuard() { g_renderer_mutex.unlock(); }
+
+    RendererGuard(const RendererGuard&) = delete;
+    RendererGuard& operator=(const RendererGuard&) = delete;
+
+    RendererBase* get() const { return renderer_; }
+    explicit operator bool() const { return renderer_ != nullptr; }
+
+private:
+    RendererBase* renderer_ = nullptr;
+};
+
+} // namespace
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeInitialize(
@@ -406,6 +445,334 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeIsExtensionSupp
     bool result = renderer->isExtensionSupported(ext);
     env->ReleaseStringUTFChars(extension, ext);
     return result ? JNI_TRUE : JNI_FALSE;
+}
+// ---------------------------------------------------------------------------
+// Resource and draw path
+//
+// These entry points form the minimum complete path for a real frame:
+// create resources -> record commands -> submit -> present. Each one degrades
+// safely when the manager it needs is unavailable (for example before a backend
+// finished initializing) instead of dereferencing null.
+// ---------------------------------------------------------------------------
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeAreManagersReady(
+    JNIEnv* env, jobject thiz
+) {
+    RendererGuard guard;
+    if (!guard) return JNI_FALSE;
+    RendererBase* renderer = guard.get();
+    const bool ready = renderer->getBufferManager() != nullptr &&
+                       renderer->getTextureManager() != nullptr &&
+                       renderer->getShaderManager() != nullptr &&
+                       renderer->getStateManager() != nullptr;
+    return ready ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateBuffer(
+    JNIEnv* env, jobject thiz, jlong size, jint usage
+) {
+    RendererGuard guard;
+    if (!guard || size <= 0) return 0;
+    BufferManager* buffers = guard.get()->getBufferManager();
+    if (!buffers) return 0;
+    return static_cast<jlong>(
+        buffers->createBuffer(static_cast<uint64_t>(size), static_cast<uint32_t>(usage), 0));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDestroyBuffer(
+    JNIEnv* env, jobject thiz, jlong handle
+) {
+    RendererGuard guard;
+    if (!guard) return;
+    if (BufferManager* buffers = guard.get()->getBufferManager()) {
+        buffers->destroyBuffer(static_cast<uint64_t>(handle));
+    }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeUpdateBuffer(
+    JNIEnv* env, jobject thiz, jlong handle, jlong offset, jbyteArray data
+) {
+    RendererGuard guard;
+    if (!guard || data == nullptr) return JNI_FALSE;
+    BufferManager* buffers = guard.get()->getBufferManager();
+    if (!buffers) return JNI_FALSE;
+
+    const jsize length = env->GetArrayLength(data);
+    if (length <= 0) return JNI_FALSE;
+
+    // Critical access avoids a full heap copy for the common upload path.
+    void* bytes = env->GetPrimitiveArrayCritical(data, nullptr);
+    if (bytes == nullptr) {
+        return JNI_FALSE;
+    }
+    buffers->updateBuffer(static_cast<uint64_t>(handle), static_cast<uint64_t>(offset), bytes,
+                          static_cast<uint64_t>(length));
+    env->ReleasePrimitiveArrayCritical(data, bytes, 0);
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateTexture2D(
+    JNIEnv* env, jobject thiz, jint width, jint height, jint format, jint usage, jint mipLevels
+) {
+    RendererGuard guard;
+    if (!guard) return 0;
+    TextureManager* textures = guard.get()->getTextureManager();
+    if (!textures) return 0;
+    return static_cast<jlong>(textures->createTexture2D(static_cast<uint32_t>(width),
+                                                          static_cast<uint32_t>(height),
+                                                          static_cast<uint32_t>(format),
+                                                          static_cast<uint32_t>(usage),
+                                                          static_cast<uint32_t>(mipLevels)));
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeUploadTexture(
+    JNIEnv* env, jobject thiz, jlong handle, jint mipLevel, jbyteArray data
+) {
+    RendererGuard guard;
+    if (!guard || data == nullptr) return JNI_FALSE;
+    TextureManager* textures = guard.get()->getTextureManager();
+    if (!textures) return JNI_FALSE;
+
+    const jsize length = env->GetArrayLength(data);
+    if (length <= 0) return JNI_FALSE;
+
+    void* bytes = env->GetPrimitiveArrayCritical(data, nullptr);
+    if (bytes == nullptr) {
+        return JNI_FALSE;
+    }
+    // A zero extent means "the whole level"; the texture manager resolves it
+    // against the stored dimensions.
+    textures->updateTexture(static_cast<uint64_t>(handle), static_cast<uint32_t>(mipLevel), 0, 0, 0, 0, 0, 0, 0,
+                            bytes, static_cast<uint64_t>(length));
+    env->ReleasePrimitiveArrayCritical(data, bytes, 0);
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDestroyTexture(
+    JNIEnv* env, jobject thiz, jlong handle
+) {
+    RendererGuard guard;
+    if (!guard) return;
+    if (TextureManager* textures = guard.get()->getTextureManager()) {
+        textures->destroyTexture(static_cast<uint64_t>(handle));
+    }
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateShader(
+    JNIEnv* env, jobject thiz, jint stage, jstring source, jobjectArray defines
+) {
+    RendererGuard guard;
+    if (!guard || source == nullptr) return 0;
+    ShaderManager* shaders = guard.get()->getShaderManager();
+    if (!shaders) return 0;
+
+    const char* glsl = env->GetStringUTFChars(source, nullptr);
+    if (glsl == nullptr) {
+        return 0;
+    }
+    std::vector<std::string> define_list;
+    if (defines != nullptr) {
+        const jsize count = env->GetArrayLength(defines);
+        for (jsize i = 0; i < count; ++i) {
+            jstring element = static_cast<jstring>(env->GetObjectArrayElement(defines, i));
+            if (element == nullptr) {
+                continue;
+            }
+            const char* text = env->GetStringUTFChars(element, nullptr);
+            if (text != nullptr) {
+                define_list.emplace_back(text);
+                env->ReleaseStringUTFChars(element, text);
+            }
+            env->DeleteLocalRef(element);
+        }
+    }
+
+    const uint64_t handle =
+        shaders->createShaderFromGLSL(static_cast<ShaderStage>(stage), glsl, "main", define_list);
+    env->ReleaseStringUTFChars(source, glsl);
+    return static_cast<jlong>(handle);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDestroyShader(
+    JNIEnv* env, jobject thiz, jlong handle
+) {
+    RendererGuard guard;
+    if (!guard) return;
+    if (ShaderManager* shaders = guard.get()->getShaderManager()) {
+        shaders->destroyShader(static_cast<uint64_t>(handle));
+    }
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateGraphicsPipeline(
+    JNIEnv* env, jobject thiz, jlong vertexShader, jlong fragmentShader
+) {
+    RendererGuard guard;
+    if (!guard) return 0;
+    ShaderManager* shaders = guard.get()->getShaderManager();
+    if (!shaders) return 0;
+    ShaderManager::PipelineLayoutDesc layout;
+    return static_cast<jlong>(shaders->createGraphicsPipeline(static_cast<uint64_t>(vertexShader),
+                                                                static_cast<uint64_t>(fragmentShader),
+                                                                layout));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDestroyPipeline(
+    JNIEnv* env, jobject thiz, jlong handle
+) {
+    RendererGuard guard;
+    if (!guard) return;
+    if (ShaderManager* shaders = guard.get()->getShaderManager()) {
+        shaders->destroyPipeline(static_cast<uint64_t>(handle));
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBindPipeline(
+    JNIEnv* env, jobject thiz, jlong pipeline
+) {
+    RendererGuard guard;
+    if (!guard) return;
+    if (StateManager* state = guard.get()->getStateManager()) {
+        state->bindPipeline(static_cast<uint64_t>(pipeline));
+        state->applyState();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBindVertexBuffers(
+    JNIEnv* env, jobject thiz, jint first_binding, jlongArray buffers, jintArray offsets
+) {
+    RendererGuard guard;
+    if (!guard || buffers == nullptr) return;
+    StateManager* state = guard.get()->getStateManager();
+    if (!state) return;
+
+    const jsize buffer_count = env->GetArrayLength(buffers);
+    const jsize offset_count = offsets != nullptr ? env->GetArrayLength(offsets) : 0;
+    if (buffer_count <= 0) return;
+
+    jlong* buffer_values = env->GetLongArrayElements(buffers, nullptr);
+    jint* offset_values = offset_count > 0 ? env->GetIntArrayElements(offsets, nullptr) : nullptr;
+    if (buffer_values == nullptr) return;
+
+    for (jsize i = 0; i < buffer_count; ++i) {
+        const uint32_t offset =
+            offset_values != nullptr && i < offset_count ? static_cast<uint32_t>(offset_values[i]) : 0u;
+        const auto binding = static_cast<uint32_t>(first_binding + i);
+        if (binding >= kMaxVertexBindings) {
+            LOGE("vertex binding %u is out of range (max %u)", binding, kMaxVertexBindings);
+            break;
+        }
+        state->bindVertexBuffer(binding, static_cast<uint64_t>(buffer_values[i]), offset);
+    }
+
+    env->ReleaseLongArrayElements(buffers, buffer_values, 0);
+    if (offset_values != nullptr) {
+        env->ReleaseIntArrayElements(offsets, offset_values, 0);
+    }
+    state->applyState();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBindIndexBuffer(
+    JNIEnv* env, jobject thiz, jlong buffer, jint indexType
+) {
+    RendererGuard guard;
+    if (!guard) return;
+    if (StateManager* state = guard.get()->getStateManager()) {
+        state->bindIndexBuffer(static_cast<uint64_t>(buffer), static_cast<uint32_t>(indexType));
+        state->applyState();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeSetViewport(
+    JNIEnv* env, jobject thiz, jfloat x, jfloat y, jfloat width, jfloat height
+) {
+    RendererGuard guard;
+    if (!guard) return;
+    if (StateManager* state = guard.get()->getStateManager()) {
+        state->setViewport(x, y, width, height, 0.0f, 1.0f);
+        state->applyState();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeSetScissor(
+    JNIEnv* env, jobject thiz, jint x, jint y, jint width, jint height
+) {
+    RendererGuard guard;
+    if (!guard) return;
+    if (StateManager* state = guard.get()->getStateManager()) {
+        state->setScissor(x, y, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+        state->applyState();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBindFramebuffer(
+    JNIEnv* env, jobject thiz, jlong framebuffer
+) {
+    RendererGuard guard;
+    if (!guard) return;
+    if (StateManager* state = guard.get()->getStateManager()) {
+        state->setFramebuffer(static_cast<uint64_t>(framebuffer));
+        state->applyState();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDraw(
+    JNIEnv* env, jobject thiz, jint vertexCount, jint instanceCount, jint firstVertex, jint firstInstance
+) {
+    RendererGuard guard;
+    if (!guard) return;
+    if (CommandBuffer* commands = guard.get()->getCommandBuffer()) {
+        commands->draw(static_cast<uint32_t>(vertexCount), static_cast<uint32_t>(instanceCount),
+                       static_cast<uint32_t>(firstVertex), static_cast<uint32_t>(firstInstance));
+    }
+    if (Profiler* profiler = guard.get()->getProfiler()) {
+        profiler->recordDrawCall();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDrawIndexed(
+    JNIEnv* env, jobject thiz, jint indexCount, jint instanceCount, jint firstIndex, jint vertexOffset,
+    jint firstInstance
+) {
+    RendererGuard guard;
+    if (!guard) return;
+    if (CommandBuffer* commands = guard.get()->getCommandBuffer()) {
+        commands->drawIndexed(static_cast<uint32_t>(indexCount), static_cast<uint32_t>(instanceCount),
+                              static_cast<uint32_t>(firstIndex), static_cast<int32_t>(vertexOffset),
+                              static_cast<uint32_t>(firstInstance));
+    }
+    if (Profiler* profiler = guard.get()->getProfiler()) {
+        profiler->recordDrawCall();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeResetFrameStats(
+    JNIEnv* env, jobject thiz
+) {
+    RendererGuard guard;
+    if (!guard) return;
+    if (Profiler* profiler = guard.get()->getProfiler()) {
+        profiler->reset();
+    }
 }
 
 } // namespace copper

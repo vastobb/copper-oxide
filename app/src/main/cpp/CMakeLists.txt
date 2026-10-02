@@ -60,9 +60,29 @@ add_library(copper-oxide SHARED
     # Vulkan backend
     renderer/vulkan/vulkan_renderer.cpp
     renderer/vulkan/vma_impl.cpp
+    renderer/vulkan/vulkan_buffer_manager.cpp
+    renderer/vulkan/vulkan_texture_manager.cpp
+    renderer/vulkan/vulkan_shader_manager.cpp
+    renderer/vulkan/vulkan_state_manager.cpp
+    renderer/vulkan/vulkan_framebuffer_manager.cpp
+    renderer/vulkan/vulkan_sync_manager.cpp
+    renderer/vulkan/vulkan_resource_pool.cpp
+    renderer/vulkan/vulkan_profiler.cpp
+    renderer/vulkan/vulkan_command_buffer.cpp
+    renderer/vulkan/vulkan_command_sink.cpp
 
     # OpenGL ES backend
     renderer/gles/gles_renderer.cpp
+    renderer/gles/gles_buffer_manager.cpp
+    renderer/gles/gles_texture_manager.cpp
+    renderer/gles/gles_shader_manager.cpp
+    renderer/gles/gles_state_manager.cpp
+    renderer/gles/gles_framebuffer_manager.cpp
+    renderer/gles/gles_sync_manager.cpp
+    renderer/gles/gles_resource_pool.cpp
+    renderer/gles/gles_profiler.cpp
+    renderer/gles/gles_command_buffer.cpp
+    renderer/gles/gles_command_sink.cpp
 
     # Platform integration
     platform/android/android_platform.cpp

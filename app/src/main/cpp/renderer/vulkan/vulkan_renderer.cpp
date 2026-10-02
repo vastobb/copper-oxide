@@ -125,10 +125,6 @@ bool VulkanRenderer::initialize(const RendererConfig& configIn) {
         shutdown();
         return false;
     }
-    if (!initializeManagers()) {
-        shutdown();
-        return false;
-    }
 
     {
         std::lock_guard<std::mutex> lock(frame_mutex_);
@@ -633,7 +629,11 @@ bool VulkanRenderer::create_command_pool() {
 bool VulkanRenderer::create_sync_objects() {
     // Frames in flight is bounded: each one owns a command buffer, two
     // semaphores and a fence, and mobile drivers dislike deep swapchain queues.
+    // The clamp has to happen before create_command_pool(), which sizes the
+    // allocation from frames_in_flight_, and the config is updated to match so
+    // RendererBase allocates exactly this many per-frame command buffer slots.
     frames_in_flight_ = std::clamp(config_.maxFramesInFlight, 1u, 3u);
+    config_.maxFramesInFlight = frames_in_flight_;
     const uint32_t max_frames = frames_in_flight_;
     if (!create_command_pool()) {
         return false;
@@ -742,6 +742,22 @@ void VulkanRenderer::onEndFrame() {
     vkCmdBeginRenderPass(command_buffer, &pass_begin, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdClearAttachments(command_buffer, 1, &clear_attachment, 1, &clear_rect);
     vkCmdEndRenderPass(command_buffer);
+
+    // Replay whatever the caller recorded through RendererBase::getCommandBuffer()
+    // into this frame's command buffer. Without this the frame would only ever
+    // contain the clear, and a submit would report success for work that never
+    // reached the GPU.
+    if (command_sink_ != nullptr) {
+        command_sink_->setSwapchainFramebuffers(swapchain_framebuffers_);
+        command_sink_->setCommandBuffer(command_buffer, current_frame_);
+        if (CommandBuffer* recorded = acquireCommandBuffer(current_frame_)) {
+            if (!recorded->execute()) {
+                LOGW("recorded frame commands were dropped (no sink)");
+            }
+            recorded->reset();
+        }
+    }
+
     vkEndCommandBuffer(command_buffer);
 
     // Only now is it safe to reset the fence: a submit follows immediately.
@@ -903,69 +919,110 @@ void VulkanRenderer::onOptimizeForGPU(GPUVendor vendor, GPUArchitecture arch) {
     // GPU-specific optimizations
 }
 
-bool VulkanRenderer::initializeManagers() {
-    // Initialize Vulkan-specific managers
+std::unique_ptr<Profiler> VulkanRenderer::createProfiler() {
+    auto profiler = std::make_unique<VulkanProfiler>(this);
+    profiler->probe_support();
+    return profiler;
+}
+
+std::unique_ptr<SyncManager> VulkanRenderer::createSyncManager() {
+    return std::make_unique<VulkanSyncManager>(this);
+}
+
+std::unique_ptr<ResourcePool> VulkanRenderer::createResourcePool() {
+    return std::make_unique<VulkanResourcePool>(this);
+}
+
+std::unique_ptr<CommandBuffer> VulkanRenderer::createCommandBuffer(uint32_t frame_index) {
+    auto command_buffer = std::make_unique<VulkanCommandBuffer>(this);
+
+    // Use the VkCommandBuffer the renderer already allocated for this frame slot
+    // rather than allocating a second one: only command_buffers_ is tracked by
+    // the fence ring, so a second buffer would never be waited on.
+    if (frame_index < command_buffers_.size()) {
+        command_buffer->set_command_buffer(command_buffers_[frame_index], frame_index);
+    }
+
+    // The renderer submits and presents the frame itself, so this object only
+    // closes the recording.
+    command_buffer->set_renderer_submit(true);
+
+    if (command_sink_ != nullptr) {
+        command_buffer->set_sync_manager(dynamic_cast<VulkanSyncManager*>(getSyncManager()));
+        command_buffer->set_command_sink(command_sink_.get());
+    }
+    return command_buffer;
+}
+
+bool VulkanRenderer::initializeBackendManagers() {
+    auto buffer_manager = std::make_unique<VulkanBufferManager>(this);
+    auto texture_manager = std::make_unique<VulkanTextureManager>(this);
+    auto shader_manager = std::make_unique<VulkanShaderManager>(this);
+    auto framebuffer_manager = std::make_unique<VulkanFramebufferManager>(this);
+    auto state_manager = std::make_unique<VulkanStateManager>(this);
+
+    VulkanBufferManager* buffers = buffer_manager.get();
+    VulkanTextureManager* textures = texture_manager.get();
+    VulkanShaderManager* shaders = shader_manager.get();
+    VulkanFramebufferManager* framebuffers = framebuffer_manager.get();
+    VulkanStateManager* state = state_manager.get();
+
+    // Handles are opaque manager-local ids, never VkBuffer/VkImageView values,
+    // so every backend manager needs a way to resolve one back to the object the
+    // API expects. A missing resolver degrades to "unresolvable", which the
+    // hooks log rather than silently binding a null handle.
+    state->setBufferResolver([buffers](uint64_t handle) { return buffers->vkBuffer(handle); });
+    state->setPipelineResolver([shaders](uint64_t handle) {
+        VulkanStateManager::VulkanPipelineBinding binding{};
+        binding.pipeline = shaders->pipeline(handle);
+        binding.layout = shaders->pipelineLayout(handle);
+        return binding;
+    });
+    state->setFramebufferResolver(
+        [framebuffers](uint64_t handle) { return framebuffers->vkFramebuffer(handle); });
+    framebuffers->setImageViewResolver(
+        [textures](uint64_t handle) { return textures->imageView(handle); });
+    framebuffers->setAttachmentInfoResolver([textures](uint64_t handle) {
+        VulkanFramebufferManager::AttachmentInfo info{};
+        textures->imageExtent(handle, &info.width, &info.height, &info.array_layers);
+        return info;
+    });
+
+    if (!registerBufferManager(std::move(buffer_manager)) ||
+        !registerTextureManager(std::move(texture_manager)) ||
+        !registerShaderManager(std::move(shader_manager)) ||
+        !registerFramebufferManager(std::move(framebuffer_manager))) {
+        return false;
+    }
+
+    // The sink and the state manager must exist before the frame command
+    // buffers are built, because createCommandBuffer() hands them the sink.
+    command_sink_ = std::make_unique<VulkanCommandSink>(this, state);
+    command_sink_->setProfiler(getProfiler());
+
+    if (!registerStateManager(std::move(state_manager))) {
+        return false;
+    }
+
+    // Rebuild the per-frame command buffers so each one gets the sink that the
+    // base created them before it knew about.
+    return refreshCommandBufferSinks();
+}
+
+bool VulkanRenderer::refreshCommandBufferSinks() {
+    if (command_sink_ == nullptr) {
+        return false;
+    }
+    command_sink_->setSwapchainFramebuffers(swapchain_framebuffers_);
+    for (uint32_t frame = 0; frame < config_.maxFramesInFlight; ++frame) {
+        if (CommandBuffer* command_buffer = acquireCommandBuffer(frame)) {
+            auto* vulkan_command_buffer = dynamic_cast<VulkanCommandBuffer*>(command_buffer);
+            if (vulkan_command_buffer != nullptr) {
+                vulkan_command_buffer->set_command_sink(command_sink_.get());
+            }
+        }
+    }
     return true;
-}
-
-void VulkanRenderer::onMemoryPressure(int level) {
-    if (level <= 0) return;
-    if (texture_manager_) { texture_manager_->trimCache(level); }
-}
-
-void VulkanRenderer::onThermalThrottling(float temperatureRatio) {
-    if (temperatureRatio > 0.9f) {
-        reduceQuality();
-    }
-}
-
-bool VulkanRenderer::supportsFeature(RendererFeature feature) const {
-    return (static_cast<uint32_t>(feature) & static_cast<uint32_t>(supported_features_)) != 0;
-}
-
-bool VulkanRenderer::isExtensionSupported(const std::string& extension) const {
-    for (const auto& ext : gpu_info_.extensions) {
-        if (ext == extension) return true;
-    }
-    return false;
-}
-
-void VulkanRenderer::waitIdle() {
-    if (device_ != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(device_);
-    }
-}
-
-void VulkanRenderer::onSurfaceChanged(uint32_t width, uint32_t height) {
-    onResize(width, height);
-}
-
-void VulkanRenderer::setNativeWindow(void* native_window) {
-    std::lock_guard<std::mutex> lock(frame_mutex_);
-    ANativeWindow* next = static_cast<ANativeWindow*>(native_window);
-    if (next == native_window_) {
-        return;
-    }
-    if (native_window_) {
-        ANativeWindow_release(native_window_);
-    }
-    if (next) {
-        ANativeWindow_acquire(next);
-    }
-    native_window_ = next;
-}
-
-void VulkanRenderer::onSurfaceDestroyed() {
-    std::lock_guard<std::mutex> lock(frame_mutex_);
-    destroy_swapchain();
-    if (surface_ != VK_NULL_HANDLE && fp_vkDestroySurfaceKHR) {
-        fp_vkDestroySurfaceKHR(instance_, surface_, nullptr);
-        surface_ = VK_NULL_HANDLE;
-    }
-    if (native_window_) {
-        ANativeWindow_release(native_window_);
-        native_window_ = nullptr;
-    }
 }
 
 } // namespace copper

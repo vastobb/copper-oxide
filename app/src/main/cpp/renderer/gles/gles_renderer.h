@@ -11,6 +11,19 @@
 #include "resource_pool.h"
 #include "profiler.h"
 
+// Backend managers. These own the real GL objects; the renderer only holds
+// std::unique_ptr to the base interfaces.
+#include "gles_buffer_manager.h"
+#include "gles_texture_manager.h"
+#include "gles_shader_manager.h"
+#include "gles_state_manager.h"
+#include "gles_framebuffer_manager.h"
+#include "gles_sync_manager.h"
+#include "gles_resource_pool.h"
+#include "gles_profiler.h"
+#include "gles_command_buffer.h"
+#include "gles_command_sink.h"
+
 #include <GLES3/gl32.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -33,15 +46,6 @@ public:
     bool initialize(const RendererConfig& config) override;
     void shutdown() override;
 
-    BufferManager* getBufferManager() override { return buffer_manager_.get(); }
-    TextureManager* getTextureManager() override { return texture_manager_.get(); }
-    ShaderManager* getShaderManager() override { return shader_manager_.get(); }
-    FramebufferManager* getFramebufferManager() override { return framebuffer_manager_.get(); }
-    StateManager* getStateManager() override { return state_manager_.get(); }
-    CommandBuffer* getCommandBuffer() override { return command_buffer_.get(); }
-    SyncManager* getSyncManager() override { return sync_manager_.get(); }
-    ResourcePool* getResourcePool() override { return resource_pool_.get(); }
-    Profiler* getProfiler() override { return profiler_.get(); }
 
     const RendererConfig& getConfig() const override { return config_; }
     RendererBackend getBackend() const override { return RendererBackend::OpenGLES; }
@@ -77,7 +81,20 @@ public:
     bool detectGPU() override;
     void onApplyGPUWorkarounds(GPUVendor vendor, GPUArchitecture arch) override;
     void onOptimizeForGPU(GPUVendor vendor, GPUArchitecture arch) override;
-    bool initializeManagers() override;
+    // Manager construction. The base owns creation, validation, ordering and
+    // teardown; these factories and hooks only supply the backend objects.
+    std::unique_ptr<Profiler> createProfiler() override;
+    std::unique_ptr<SyncManager> createSyncManager() override;
+    std::unique_ptr<ResourcePool> createResourcePool() override;
+    std::unique_ptr<CommandBuffer> createCommandBuffer(uint32_t frame_index) override;
+    bool initializeBackendManagers() override;
+
+    // Re-points every per-frame command buffer at the sink. Called after
+    // registration and whenever the EGL context is created or lost, because the
+    // sink refuses to issue GL calls without a current context.
+    bool refreshCommandBufferSinks();
+
+    GLESCommandSink* commandSink() { return command_sink_.get(); }
     bool onBeginFrame() override;
     void onEndFrame() override;
     void onPresent() override;
@@ -115,16 +132,10 @@ private:
     // Context health
     std::atomic<bool> context_lost_{false};
 
-    // Managers
-    std::unique_ptr<BufferManager> buffer_manager_;
-    std::unique_ptr<TextureManager> texture_manager_;
-    std::unique_ptr<ShaderManager> shader_manager_;
-    std::unique_ptr<FramebufferManager> framebuffer_manager_;
-    std::unique_ptr<StateManager> state_manager_;
-    std::unique_ptr<CommandBuffer> command_buffer_;
-    std::unique_ptr<SyncManager> sync_manager_;
-    std::unique_ptr<ResourcePool> resource_pool_;
-    std::unique_ptr<Profiler> profiler_;
+    // Managers are owned by RendererBase after initialization; this renderer
+    // only supplies factories and wires the backend resolvers.
+
+    std::unique_ptr<GLESCommandSink> command_sink_;
 
     // Config & state
     RendererConfig config_;
@@ -157,122 +168,5 @@ private:
     // Resource cleanup
     void cleanup_frame_resources();
 };
-
-// GLES Buffer Manager
-class GLESCBufferManager : public BufferManager {
-public:
-    GLESCBufferManager(GLESCRenderer* renderer);
-    ~GLESCBufferManager() override;
-
-    uint64_t createBuffer(uint64_t size, uint32_t usage, uint32_t memory_flags) override;
-    void destroyBuffer(uint64_t handle) override;
-    void* mapBuffer(uint64_t handle, uint64_t offset = 0, uint64_t size = 0) override;
-    void unmapBuffer(uint64_t handle) override;
-    void flushBuffer(uint64_t handle, uint64_t offset, uint64_t size) override;
-    void invalidateBuffer(uint64_t handle, uint64_t offset, uint64_t size) override;
-    void updateBuffer(uint64_t handle, uint64_t offset, const void* data, uint64_t size) override;
-    void copyBuffer(uint64_t src, uint64_t dst, uint64_t size, uint64_t src_offset = 0, uint64_t dst_offset = 0) override;
-
-    const Buffer* getBuffer(uint64_t handle) const override;
-    uint64_t getBufferSize(uint64_t handle) const override;
-    void setBufferDebugName(uint64_t handle, const std::string& name) override;
-
-    uint64_t allocateFromPool(uint64_t size, uint32_t usage) override;
-    void returnToPool(uint64_t handle) override;
-    void trimPool(int level) override;
-
-private:
-    GLESCRenderer* renderer_;
-    struct BufferData {
-        GLuint buffer = 0;
-        Buffer base;
-    };
-    std::unordered_map<uint64_t, std::unique_ptr<BufferData>> buffers_;
-    std::mutex buffers_mutex_;
-    uint64_t next_handle_ = 1;
-};
-
-// GLES Texture Manager
-class GLESSTextureManager : public TextureManager {
-public:
-    GLESSTextureManager(GLESCRenderer* renderer);
-    ~GLESSTextureManager() override;
-
-    uint64_t createTexture2D(uint32_t width, uint32_t height, uint32_t format, uint32_t usage, uint32_t mip_levels = 1) override;
-    uint64_t createTexture3D(uint32_t width, uint32_t height, uint32_t depth, uint32_t format, uint32_t usage, uint32_t mip_levels = 1) override;
-    uint64_t createTextureCube(uint32_t width, uint32_t height, uint32_t format, uint32_t usage, uint32_t mip_levels = 1) override;
-    uint64_t createTextureArray(uint32_t width, uint32_t height, uint32_t array_layers, uint32_t format, uint32_t usage, uint32_t mip_levels = 1) override;
-    void destroyTexture(uint64_t handle) override;
-
-    void updateTexture(uint64_t handle, uint32_t mip_level, uint32_t array_layer, uint32_t x, uint32_t y, uint32_t z, uint32_t width, uint32_t height, uint32_t depth, const void* data, uint64_t data_size) override;
-    void copyTexture(uint64_t src, uint64_t dst, uint32_t src_mip, uint32_t dst_mip, uint32_t src_layer, uint32_t dst_layer) override;
-    void generateMipmaps(uint64_t handle) override;
-
-    uint64_t loadTextureFromMemory(const void* data, uint64_t size, uint32_t format, bool generate_mipmaps) override;
-    uint64_t getOrCreateTexture(const std::string& key, std::function<uint64_t()> creator) override;
-
-    void setTextureDebugName(uint64_t handle, const std::string& name) override;
-    void trimCache(int level) override;
-    size_t getCacheSizeMb() const override;
-    void setMaxCacheSizeMb(size_t size_mb) override;
-
-private:
-    GLESCRenderer* renderer_;
-    struct TextureData {
-        GLuint texture = 0;
-        GLenum target = GL_TEXTURE_2D;
-        Texture base;
-    };
-    std::unordered_map<uint64_t, std::unique_ptr<TextureData>> textures_;
-    std::mutex textures_mutex_;
-    uint64_t next_handle_ = 1;
-};
-
-// GLES Shader Manager
-class GLESShaderManager : public ShaderManager {
-public:
-    GLESShaderManager(GLESCRenderer* renderer);
-    ~GLESShaderManager() override;
-
-    uint64_t createShader(ShaderStage stage, const std::vector<uint32_t>& spirv, const std::string& entry_point = "main") override;
-    uint64_t createShaderFromGLSL(ShaderStage stage, const std::string& glsl_source, const std::string& entry_point, const std::vector<std::string>& defines) override;
-    void destroyShader(uint64_t handle) override;
-
-    uint64_t createGraphicsPipeline(uint64_t vertex_shader, uint64_t fragment_shader, const PipelineLayoutDesc& layout) override;
-    uint64_t createComputePipeline(uint64_t compute_shader, const PipelineLayoutDesc& layout) override;
-    void destroyPipeline(uint64_t handle) override;
-
-    uint64_t getOrCreateShader(const std::string& key, std::function<uint64_t()> creator) override;
-    uint64_t getOrCreatePipeline(const std::string& key, std::function<uint64_t()> creator) override;
-
-    void setShaderDebugName(uint64_t handle, const std::string& name) override;
-    void setPipelineDebugName(uint64_t handle, const std::string& name) override;
-    void addSpecializationConstant(uint64_t shader_handle, const std::string& name, uint32_t value) override;
-    void compileAsync(const std::string& key, ShaderStage stage, const std::string& source, std::function<void(uint64_t)> callback) override;
-
-private:
-    GLESCRenderer* renderer_;
-    struct ShaderModuleData {
-        GLuint shader = 0;
-        ShaderModule base;
-    };
-    struct ShaderProgramData {
-        GLuint program = 0;
-        ShaderProgram base;
-    };
-    std::unordered_map<uint64_t, std::unique_ptr<ShaderModuleData>> modules_;
-    std::unordered_map<uint64_t, std::unique_ptr<ShaderProgramData>> programs_;
-    std::unordered_map<std::string, uint64_t> program_cache_;
-    std::mutex shaders_mutex_;
-    uint64_t next_handle_ = 1;
-};
-
-// Forward declare other GLES managers
-class GLESCFramebufferManager : public FramebufferManager { /* ... */ };
-class GLESCStateManager : public StateManager { /* ... */ };
-class GLESCCommandBuffer : public CommandBuffer { /* ... */ };
-class GLESCSyncManager : public SyncManager { /* ... */ };
-class GLESCResourcePool : public ResourcePool { /* ... */ };
-class GLESCProfiler : public Profiler { /* ... */ };
 
 } // namespace copper
