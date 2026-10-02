@@ -71,7 +71,7 @@ protected:
     virtual void onSetBufferDebugName(uint64_t handle, const std::string& name) = 0;
 
 private:
-    struct Impl;
+    class Impl;
     std::unique_ptr<Impl> pImpl;
 };
 

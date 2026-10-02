@@ -1,5 +1,6 @@
 #include "gpu_capabilities.h"
 #include "renderer_base.h"
+#include "renderer_config.h"
 
 #include <vulkan/vulkan.h>
 #include <GLES3/gl32.h>
@@ -22,10 +23,9 @@ bool GPUCapabilities::detect() {
     if (vendor_ == GPUVendor::Unknown) {
         queryGLESProperties();
     }
-
+    
     // Apply GPU-specific workarounds and optimizations
-    RendererConfig dummy_config;
-    applyWorkarounds(dummy_config); // Dummy config to trigger optimization config setup
+    applyWorkarounds(RendererConfig()); // Dummy config to trigger optimization config setup
     
     return vendor_ != GPUVendor::Unknown;
 }

@@ -6,13 +6,7 @@
 namespace copper {
 
 RendererConfig::RendererConfig() = default;
-
 RendererConfig::~RendererConfig() = default;
-
-RendererConfig::RendererConfig(const RendererConfig& other) = default;
-RendererConfig& RendererConfig::operator=(const RendererConfig& other) = default;
-RendererConfig::RendererConfig(RendererConfig&& other) noexcept = default;
-RendererConfig& RendererConfig::operator=(RendererConfig&& other) noexcept = default;
 
 RendererConfig RendererConfig::createForGPU(GPUVendor vendor, GPUArchitecture arch) {
     RendererConfig config;
