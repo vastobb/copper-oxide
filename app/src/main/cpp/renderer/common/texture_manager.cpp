@@ -72,6 +72,9 @@ void TextureManager::shutdown() {
 }
 
 uint64_t TextureManager::createTexture2D(uint32_t width, uint32_t height, uint32_t format, uint32_t usage, uint32_t mip_levels) {
+    if (width == 0 || height == 0) {
+        return 0;
+    }
     std::lock_guard<std::mutex> lock(pImpl->mutex);
     uint64_t handle = pImpl->next_handle++;
 
@@ -81,9 +84,13 @@ uint64_t TextureManager::createTexture2D(uint32_t width, uint32_t height, uint32
     texture.height = height;
     texture.format = format;
     texture.usage = usage;
-    texture.mip_levels = mip_levels;
+    // A mip count larger than the chain cannot exist; clamp so callers that ask
+    // for "auto" get something valid.
+    texture.mip_levels = (mip_levels == 0 || mip_levels > fullMipLevels(width, height))
+                             ? fullMipLevels(width, height)
+                             : mip_levels;
 
-    if (!onCreateTexture2D(handle, width, height, format, usage, mip_levels)) {
+    if (!onCreateTexture2D(handle, width, height, format, usage, texture.mip_levels)) {
         return 0;
     }
 
@@ -196,7 +203,9 @@ uint64_t TextureManager::loadTextureFromMemory(const void* data, uint64_t size, 
     Impl::Texture texture;
     texture.handle = handle;
     texture.format = format;
-    texture.mip_levels = generate_mipmaps ? fullMipLevels(width, height) : 1;
+    // Raw memory uploads carry no dimensions, so a single mip level is recorded
+    // here; the backend fills in the real chain when it knows the extent.
+    texture.mip_levels = 1;
 
     if (!onLoadTextureFromMemory(handle, data, size, format, generate_mipmaps)) {
         return 0;
@@ -216,6 +225,7 @@ uint64_t TextureManager::getOrCreateTexture(const std::string& key, std::functio
     }
     // creator() calls createTexture*, which takes the mutex itself: invoking it
     // under the lock would self-deadlock.
+    const uint64_t handle = creator();
     if (handle != 0) {
         std::lock_guard<std::mutex> lock(pImpl->mutex);
         // Another thread may have won the race; keep the first handle so all
