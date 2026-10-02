@@ -248,9 +248,12 @@ public:
     // Internal methods for derived classes
     virtual void incrementDrawCalls(uint32_t count);
     virtual void updateMemoryStats(uint64_t gpuMem, uint64_t cpuMem);
+    uint64_t getCurrentTimeNs() const;
 
     // Backend-specific methods (must be implemented by derived classes)
     virtual bool detectGPU() = 0;
+    void applyGPUWorkarounds(GPUVendor vendor, GPUArchitecture arch);
+    void optimizeForGPU(GPUVendor vendor, GPUArchitecture arch);
     virtual void onApplyGPUWorkarounds(GPUVendor vendor, GPUArchitecture arch) = 0;
     virtual void onOptimizeForGPU(GPUVendor vendor, GPUArchitecture arch) = 0;
     virtual bool initializeManagers() = 0;
