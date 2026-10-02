@@ -6,6 +6,8 @@
 #include <functional>
 #include <memory>
 
+#include "renderer_config.h"
+
 namespace copper {
 
 class RendererBase;
@@ -90,7 +92,7 @@ protected:
     virtual void onAddSpecializationConstant(uint64_t shader_handle, const std::string& name, uint32_t value) = 0;
 
 private:
-    struct Impl;
+    class Impl;
     std::unique_ptr<Impl> pImpl;
 };
 

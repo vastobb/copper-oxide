@@ -4,6 +4,8 @@
 #include <string>
 #include <memory>
 
+#include "renderer_config.h"
+
 namespace copper {
 
 class RendererBase;

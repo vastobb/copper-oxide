@@ -4,6 +4,8 @@
 #include <vector>
 #include <memory>
 
+#include "renderer_config.h"
+
 namespace copper {
 
 class RendererBase;
@@ -67,7 +69,7 @@ protected:
     virtual void onSubmitSignalSemaphores(const std::vector<uint64_t>& semaphores, const std::vector<uint64_t>& values) = 0;
 
 private:
-    struct Impl;
+    class Impl;
     std::unique_ptr<Impl> pImpl;
 };
 

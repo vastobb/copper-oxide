@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <memory>
 
+#include "renderer_config.h"
+
 namespace copper {
 
 class RendererBase;
@@ -60,7 +62,7 @@ protected:
     virtual void onFree(uint64_t handle) = 0;
 
 private:
-    struct Impl;
+    class Impl;
     std::unique_ptr<Impl> pImpl;
 };
 

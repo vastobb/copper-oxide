@@ -5,6 +5,8 @@
 #include <vector>
 #include <memory>
 
+#include "renderer_config.h"
+
 namespace copper {
 
 class RendererBase;
@@ -52,7 +54,7 @@ protected:
     virtual void onSetFramebufferDebugName(uint64_t handle, const std::string& name) = 0;
 
 private:
-    struct Impl;
+    class Impl;
     std::unique_ptr<Impl> pImpl;
 };
 

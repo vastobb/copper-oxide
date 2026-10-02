@@ -5,6 +5,8 @@
 #include <string>
 #include <memory>
 
+#include "renderer_config.h"
+
 namespace copper {
 
 class RendererBase;
@@ -72,7 +74,7 @@ protected:
     virtual void onEndFrame(uint64_t frame_number, double frame_time_ms, double cpu_time_ms, double gpu_time_ms, uint32_t draw_calls) = 0;
 
 private:
-    struct Impl;
+    class Impl;
     std::unique_ptr<Impl> pImpl;
 };
 

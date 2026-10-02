@@ -5,6 +5,8 @@
 #include <functional>
 #include <memory>
 
+#include "renderer_config.h"
+
 namespace copper {
 
 class RendererBase;
@@ -58,7 +60,7 @@ protected:
     virtual void onWait() = 0;
 
 private:
-    struct Impl;
+    class Impl;
     std::unique_ptr<Impl> pImpl;
 };
 
