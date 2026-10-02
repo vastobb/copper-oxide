@@ -9,6 +9,7 @@ plugins {
 android {
     namespace = "com.oxide.mc.copperoxide"
     compileSdk = 35
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "com.oxide.mc.copperoxide"
@@ -21,7 +22,7 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags += listOf("-std=c++20", "-fexceptions", "-frtti", "-Wall", "-Wextra", "-O3", "-flto")
+                cppFlags += listOf("-std=c++20", "-fexceptions", "-frtti", "-Wall", "-Wextra", "-O3")
                 arguments += listOf("-DANDROID_STL=c++_shared", "-DCMAKE_CXX_STANDARD=20", "-DCMAKE_CXX_STANDARD_REQUIRED=ON")
                 abiFilters += listOf("arm64-v8a")
             }

@@ -12,7 +12,7 @@
 
 namespace copper {
 
-class AndroidPlatform::Impl {
+struct AndroidPlatform::Impl {
 public:
     JavaVM* jvm = nullptr;
     jobject context = nullptr;
