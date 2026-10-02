@@ -215,4 +215,21 @@ void GLESCRenderer::onSurfaceDestroyed() {
     eglMakeCurrent(egl_display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 }
 
+bool GLESCRenderer::detectGPU() {
+    return query_gpu_info();
+}
+
+void GLESCRenderer::onApplyGPUWorkarounds(GPUVendor vendor, GPUArchitecture arch) {
+    apply_driver_workarounds();
+}
+
+void GLESCRenderer::onOptimizeForGPU(GPUVendor vendor, GPUArchitecture arch) {
+    // GPU-specific optimizations
+}
+
+bool GLESCRenderer::initializeManagers() {
+    // Initialize GLES-specific managers
+    return true;
+}
+
 } // namespace copper

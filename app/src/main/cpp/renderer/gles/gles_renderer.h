@@ -75,6 +75,22 @@ public:
 
     void waitIdle() override;
 
+    // Backend-specific virtual methods (must implement)
+    bool detectGPU() override;
+    void onApplyGPUWorkarounds(GPUVendor vendor, GPUArchitecture arch) override;
+    void onOptimizeForGPU(GPUVendor vendor, GPUArchitecture arch) override;
+    bool initializeManagers() override;
+    bool onBeginFrame() override;
+    void onEndFrame() override;
+    void onPresent() override;
+    void onResize(uint32_t width, uint32_t height) override;
+    void onWaitIdle() override;
+    RendererBackend getBackendImpl() const override;
+    std::string getGpuRendererStringImpl() const override;
+    std::string getGpuVendorStringImpl() const override;
+    std::string getGpuVersionStringImpl() const override;
+    void reduceQuality() override;
+
     // EGL access
     EGLDisplay get_egl_display() const { return egl_display_; }
     EGLContext get_egl_context() const { return egl_context_; }

@@ -73,6 +73,22 @@ public:
 
     void waitIdle() override;
 
+    // Backend-specific virtual methods (must implement)
+    bool detectGPU() override;
+    void onApplyGPUWorkarounds(GPUVendor vendor, GPUArchitecture arch) override;
+    void onOptimizeForGPU(GPUVendor vendor, GPUArchitecture arch) override;
+    bool initializeManagers() override;
+    bool onBeginFrame() override;
+    void onEndFrame() override;
+    void onPresent() override;
+    void onResize(uint32_t width, uint32_t height) override;
+    void onWaitIdle() override;
+    RendererBackend getBackendImpl() const override;
+    std::string getGpuRendererStringImpl() const override;
+    std::string getGpuVendorStringImpl() const override;
+    std::string getGpuVersionStringImpl() const override;
+    void reduceQuality() override;
+
 private:
     // Vulkan instance & device
     VkInstance instance_ = VK_NULL_HANDLE;
@@ -149,7 +165,7 @@ private:
     bool create_descriptor_pool();
     bool create_pipeline_cache();
     bool create_allocator();
-    void setup_debug_messenger();
+    bool setup_debug_messenger();
     void query_gpu_info();
     void query_limits();
     void apply_driver_workarounds();
