@@ -2,7 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.kapt")
-    id("dev.zacsweers.spotless") version "6.25.0"
+    id("com.diffplug.spotless") version "6.25.0"
     id("io.gitlab.arturbosch.detekt") version "1.23.6"
 }
 

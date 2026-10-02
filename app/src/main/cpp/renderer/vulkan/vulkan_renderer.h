@@ -16,7 +16,7 @@
 #endif
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
-#include <vma/vk_mem_alloc.h>  // VMA for memory allocation
+#include <vk_mem_alloc.h>  // VMA for memory allocation
 #include <android/native_window.h>
 #include <vector>
 #include <unordered_map>
