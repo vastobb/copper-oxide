@@ -377,7 +377,11 @@ jobs:
           script: |
             adb install -r -t app/build/outputs/apk/androidTest/debug/*.apk
             adb install -r -t app/build/outputs/apk/debug/*.apk
+            adb logcat -c || true
             adb shell am instrument -w com.oxide.mc.copperoxide.test/androidx.test.runner.AndroidJUnitRunner | tee instrumented-tests.log
+            # The renderer's own logging is the only way to tell a driver that
+            # refuses to initialise from one that initialises and draws nothing.
+            adb logcat -d -v brief '*:S' CopperOxide:V CopperOxide-JNI:V CopperOxide-Base:V libc:V DEBUG:V AndroidRuntime:E | tee instrumented-logcat.txt || true
             # `am instrument` reports failures in its output but still exits 0, so
             # a green job meant nothing. Fail on the two markers that actually
             # distinguish a run: JUnit prints FAILURES!!! or "OK (n tests)".
@@ -390,6 +394,15 @@ jobs:
               exit 1
             fi
             grep -E 'Tests run:|OK \(' instrumented-tests.log || true
+
+      - name: Upload renderer logcat
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: instrumented-logcat
+          path: instrumented-logcat.txt
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Upload test results
         if: always()

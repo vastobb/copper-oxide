@@ -128,19 +128,25 @@ void BufferManager::invalidateBuffer(uint64_t handle, uint64_t offset, uint64_t 
     onInvalidateBuffer(handle, offset, size);
 }
 
-void BufferManager::updateBuffer(uint64_t handle, uint64_t offset, const void* data, uint64_t size) {
+bool BufferManager::updateBuffer(uint64_t handle, uint64_t offset, const void* data, uint64_t size) {
     {
         std::lock_guard<std::mutex> lock(pImpl->mutex);
         auto it = pImpl->buffers.find(handle);
         if (it == pImpl->buffers.end()) {
-            return;
+            return false;
         }
-        // Out-of-range writes become out-of-bounds memcpys in the backend.
+        // Out-of-range writes become out-of-bounds memcpys in the backend, so
+        // they are refused. The subtraction is guarded first: `size - offset`
+        // would wrap for offset > size and let every range through.
         if (offset > it->second.size || size > it->second.size - offset) {
-            return;
+            return false;
         }
     }
+    if (data == nullptr || size == 0) {
+        return false;
+    }
     onUpdateBuffer(handle, offset, data, size);
+    return true;
 }
 
 void BufferManager::copyBuffer(uint64_t src, uint64_t dst, uint64_t size, uint64_t src_offset, uint64_t dst_offset) {

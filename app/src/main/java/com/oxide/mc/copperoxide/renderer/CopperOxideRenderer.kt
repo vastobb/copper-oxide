@@ -150,7 +150,14 @@ open class CopperOxideRenderer(
             while (initialized && !Thread.currentThread().isInterrupted) {
                 val frameStart = System.nanoTime()
 
-                if (nativeBeginFrame()) {
+                // beginFrame() returns false when the backend could not acquire
+                // an image, which happens during a swapchain recreation and on
+                // every frame on a context where presenting is impossible. That
+                // is not an error, but it must not be reported as a frame: a
+                // callback that fires whether or not anything rendered tells a
+                // caller nothing and hides a renderer that never draws.
+                val rendered = nativeBeginFrame()
+                if (rendered) {
                     // Render frame here - this is where Minecraft would submit draw calls
                     onRenderFrame()
 
@@ -175,7 +182,9 @@ open class CopperOxideRenderer(
                 // Telemetry is throttled: seven JNI calls plus a main-thread
                 // dispatch every frame is pure overhead for a 60 Hz signal.
                 val callback = frameCallback
-                if (callback != null && frameEnd - lastStatsEmitNanos >= STATS_INTERVAL_NANOS) {
+                if (rendered && callback != null &&
+                    frameEnd - lastStatsEmitNanos >= STATS_INTERVAL_NANOS
+                ) {
                     lastStatsEmitNanos = frameEnd
                     val stats = getFrameStats()
                     withContext(Dispatchers.Main) {

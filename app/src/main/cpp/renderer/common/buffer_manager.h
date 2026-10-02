@@ -45,7 +45,15 @@ public:
     virtual void invalidateBuffer(uint64_t handle, uint64_t offset, uint64_t size);
 
     // Buffer updates
-    virtual void updateBuffer(uint64_t handle, uint64_t offset, const void* data, uint64_t size);
+    /**
+     * Writes `size` bytes at `offset`.
+     *
+     * Returns false when the handle is unknown or the range falls outside the
+     * buffer. It used to return void, which meant an out-of-range write was
+     * dropped silently and the caller reported success - the failure mode the
+     * instrumented test now catches.
+     */
+    virtual bool updateBuffer(uint64_t handle, uint64_t offset, const void* data, uint64_t size);
     virtual void copyBuffer(uint64_t src, uint64_t dst, uint64_t size, uint64_t src_offset = 0, uint64_t dst_offset = 0);
 
     // Buffer queries

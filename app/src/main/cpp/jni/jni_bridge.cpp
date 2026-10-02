@@ -510,9 +510,15 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeUpdateBuffer(
     if (bytes == nullptr) {
         return JNI_FALSE;
     }
-    buffers->updateBuffer(static_cast<uint64_t>(handle), static_cast<uint64_t>(offset), bytes,
-                          static_cast<uint64_t>(length));
+    const bool written = buffers->updateBuffer(static_cast<uint64_t>(handle),
+                                               static_cast<uint64_t>(offset), bytes,
+                                               static_cast<uint64_t>(length));
     env->ReleasePrimitiveArrayCritical(data, bytes, 0);
+    if (!written) {
+        LOGE("buffer %lld rejected a %d byte write at offset %lld", static_cast<long long>(handle),
+             length, static_cast<long long>(offset));
+        return JNI_FALSE;
+    }
     return JNI_TRUE;
 }
 
