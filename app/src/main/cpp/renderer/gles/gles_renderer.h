@@ -48,10 +48,10 @@ public:
     uint64_t getGpuMemoryUsed() const override { return frame_stats_.gpu_memory; }
     uint64_t getCpuMemoryUsed() const override { return frame_stats_.cpu_memory; }
 
-    std::string getGpuRendererString() const override { return gpu_info_.renderer; }
-    std::string getGpuVendorString() const override { return gpu_info_.vendor; }
-    std::string getGpuVersionString() const override { return gpu_info_.version; }
-    GPUVendor getGpuVendor() const override { return gpu_info_.vendor_enum; }
+    std::string getGpuRendererString() const override { return gpu_info_.renderer_string; }
+    std::string getGpuVendorString() const override { return gpu_info_.vendor_string; }
+    std::string getGpuVersionString() const override { return gpu_info_.version_string; }
+    GPUVendor getGpuVendor() const override { return gpu_info_.vendor; }
     GPUArchitecture getGpuArchitecture() const override { return gpu_info_.architecture; }
 
     void onSurfaceChanged(uint32_t width, uint32_t height) override;
