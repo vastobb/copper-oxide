@@ -9,10 +9,10 @@ import com.oxide.mc.copperoxide.renderer.RendererBackend
 import com.oxide.mc.copperoxide.renderer.RendererConfig
 import com.oxide.mc.copperoxide.renderer.RendererFeature
 import org.junit.After
-import org.junit.Assume
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -69,7 +69,7 @@ class RendererSmokeTest {
         val instance = requireNotNull(renderer)
         Assume.assumeTrue(
             "no usable GPU backend in this environment",
-            instance.initialize(requireNotNull(surface))
+            instance.initialize(requireNotNull(surface)),
         )
 
         val backend = instance.currentBackend()
@@ -84,7 +84,7 @@ class RendererSmokeTest {
         // Feature queries must not crash even when the feature is unsupported.
         assertTrue(
             instance.supportsFeature(RendererFeature.DESCRIPTOR_INDEXING) ||
-                !instance.supportsFeature(RendererFeature.DESCRIPTOR_INDEXING)
+                !instance.supportsFeature(RendererFeature.DESCRIPTOR_INDEXING),
         )
     }
 
@@ -93,7 +93,7 @@ class RendererSmokeTest {
         val instance = requireNotNull(renderer)
         Assume.assumeTrue(
             "no usable GPU backend in this environment",
-            instance.initialize(requireNotNull(surface))
+            instance.initialize(requireNotNull(surface)),
         )
 
         val rendered = CountDownLatch(3)
@@ -104,7 +104,7 @@ class RendererSmokeTest {
         // Give the render loop time to present a few frames.
         assertTrue(
             "no frames were rendered within timeout",
-            rendered.await(10, TimeUnit.SECONDS)
+            rendered.await(10, TimeUnit.SECONDS),
         )
 
         val stats = instance.getFrameStats()
