@@ -302,10 +302,16 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # The renderer ships arm64-v8a only, so the emulator must run an arm64
+      # system image with software rendering. Hardware acceleration is not
+      # available for arm64 guests, so it is disabled explicitly.
       - name: Start emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
+          api-level: 33
+          target: default
+          arch: arm64-v8a
+          disable-linux-hw-accel: true
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
           script: ./gradlew connectedAndroidTest --no-daemon --stacktrace
