@@ -222,8 +222,16 @@ void GPUCapabilities::queryVulkanProperties() {
             VkPhysicalDeviceFeatures2 features2{};
             features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
             features2.pNext = &features13;
-            
-            vkGetPhysicalDeviceFeatures2(device, &features2);
+
+            // Android's libvulkan does not export Vulkan 1.1+ entry points, so the
+            // function is resolved dynamically at runtime.
+            auto get_features2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+                vkGetInstanceProcAddr(instance_, "vkGetPhysicalDeviceFeatures2"));
+            if (get_features2) {
+                get_features2(device, &features2);
+            } else {
+                break; // Device cannot report 1.1+ features; stay on the base feature set
+            }
             
             if (features11.storageBuffer16BitAccess) supported_features_ = supported_features_ | RendererFeature::StorageImageExtendedFormats;
             if (features11.uniformAndStorageBuffer16BitAccess) supported_features_ = supported_features_ | RendererFeature::UniformBufferStandardLayout;
