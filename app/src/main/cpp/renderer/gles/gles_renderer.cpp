@@ -82,6 +82,23 @@ bool GLESCRenderer::initialize(const RendererConfig& config) {
 
     eglSwapInterval(egl_display_, config_.vsyncEnabled ? 1 : 0);
 
+    // Hand the context back.
+    //
+    // initialize() runs on whatever thread called it - typically the UI thread -
+    // and the driver queries above needed the context current. But an EGL
+    // context can be current to exactly ONE thread, and the render loop runs on
+    // its own thread. Leaving it current here makes every eglMakeCurrent on that
+    // render thread fail with EGL_BAD_ACCESS, so not one frame is ever rendered.
+    // Releasing it here is what lets the render thread take ownership.
+    if (eglMakeCurrent(egl_display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE) {
+        // Non-fatal: the render thread's make_current() is what decides whether
+        // rendering works, and it will report the real problem.
+        LOGW("eglMakeCurrent(release) failed: 0x%x", eglGetError());
+    }
+    if (command_sink_ != nullptr) {
+        command_sink_->setContextAvailable(false);
+    }
+
     {
         std::lock_guard<std::mutex> lock(frame_mutex_);
         initialized_ = true;
