@@ -1,71 +1,42 @@
-# Detekt configuration for Copper Oxide (detekt 1.23 format)
+# Detekt configuration for Copper Oxide (detekt 1.23)
 style:
   MagicNumber:
     active: false
   MaxLineLength:
     maxLineLength: 200
-    active: true
   WildcardImport:
     active: false
-  UnusedImports:
-    active: true
   UnnecessaryAbstractClass:
     active: false
   ReturnCount:
     max: 5
-    active: true
 
 naming:
   FunctionNaming:
     active: false
-  ClassNaming:
-    active: true
-  VariableNaming:
-    active: true
   MemberNameEqualsClassName:
     active: false
 
 complexity:
-  ComplexMethod:
+  CyclomaticComplexMethod:
     threshold: 20
-    active: true
   LongMethod:
     threshold: 60
-    active: true
   LongParameterList:
-    threshold: 7
-    active: true
+    functionThreshold: 7
+    constructorThreshold: 9
   NestedBlockDepth:
     threshold: 5
-    active: true
 
 exceptions:
   TooGenericExceptionCaught:
     active: false
   SwallowedException:
     active: false
-  ThrowsCount:
-    max: 3
-    active: true
-
-potential-bugs:
-  UnsafeCallOnNullableType:
-    active: false
 
 performance:
   SpreadOperator:
     active: false
-
-formatting:
-  active: false
-
-comments:
-  active: false
-
-console-reports:
-  active: true
-  exclude-rulesets: []
-  min-severity: 0
 
 build:
   maxIssues: 0
