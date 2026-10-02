@@ -1,16 +1,17 @@
 #pragma once
 
-// OpenGL ES 3.1 entry points that the Vulkan/GLES headers available to this
-// build do not declare, even though every Android libGLESv3.so exports them.
+// OpenGL ES tokens and 3.1 entry points that the headers available to this build
+// do not declare, even though the specifications define them and every Android
+// libGLESv3.so exports the entry points.
 //
-// Which functions land here is decided by what the compiler actually rejects, not
-// by what the specification says should be available: <GLES3/gl32.h> in the NDK
-// sysroot this project builds against declares glCopyImageSubData and
-// glShaderBinary but not glGetTexImage or glGetBufferSubData. Declaring the
-// missing pair here keeps the difference in one place instead of scattered
-// #defines, and each is resolved at run time through eglGetProcAddress so a
-// context that cannot reach one degrades to "cannot do this" instead of
-// crashing. A null result is a normal answer, never a fatal error.
+// What lands here is decided by what the compiler actually rejects, not by what
+// the specification says should be available: the <GLES3/gl32.h> this build
+// resolves declares glCopyImageSubData and glShaderBinary, but not
+// glGetTexImage, glGetBufferSubData or even GL_ELEMENT_BUFFER. Collecting the
+// difference in one place keeps it out of the manager sources, and each entry
+// point is resolved at run time through eglGetProcAddress so a context that
+// cannot reach one degrades to "cannot do this" instead of crashing. A null
+// result is a normal answer, never a fatal error.
 //
 // This header must not redeclare anything the GLES headers already provide: a
 // duplicate declaration with a different signature is itself a compile error.
@@ -23,6 +24,13 @@
 // rather than by the core ES headers, so it is supplied here under a guard.
 #ifndef GL_SHADER_BINARY_FORMAT_SPIR_V
 #define GL_SHADER_BINARY_FORMAT_SPIR_V 0x9551
+#endif
+
+// GL_ELEMENT_BUFFER is the index-buffer binding point. It shares its value with
+// the older GL_ELEMENT_ARRAY_BUFFER spelling, which is why it can be missing
+// from a header that defines the latter.
+#ifndef GL_ELEMENT_BUFFER
+#define GL_ELEMENT_BUFFER 0x8893
 #endif
 
 extern "C" {

@@ -1,6 +1,7 @@
 #include "gles_state_manager.h"
 
 #include "gles_buffer_manager.h"
+#include "gles_missing_es31.h"
 #include "gles_shader_manager.h"
 #include "renderer_base.h"
 
