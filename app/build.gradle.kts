@@ -21,14 +21,14 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags = listOf("-std=c++20", "-fexceptions", "-frtti", "-Wall", "-Wextra", "-O3", "-flto")
-                arguments = listOf("-DANDROID_STL=c++_shared", "-DCMAKE_CXX_STANDARD=20", "-DCMAKE_CXX_STANDARD_REQUIRED=ON")
-                abiFilters = listOf("arm64-v8a")
+                cppFlags += listOf("-std=c++20", "-fexceptions", "-frtti", "-Wall", "-Wextra", "-O3", "-flto")
+                arguments += listOf("-DANDROID_STL=c++_shared", "-DCMAKE_CXX_STANDARD=20", "-DCMAKE_CXX_STANDARD_REQUIRED=ON")
+                abiFilters += listOf("arm64-v8a")
             }
         }
 
         ndk {
-            abiFilters = listOf("arm64-v8a")
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
@@ -44,7 +44,7 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
-        freeCompilerArgs = listOf("-Xopt-in=kotlin.RequiresOptIn", "-Xjvm-default=all")
+        freeCompilerArgs.addAll(listOf("-Xopt-in=kotlin.RequiresOptIn", "-Xjvm-default=all"))
     }
 
     packagingOptions {
@@ -52,7 +52,7 @@ android {
             useLegacyPackaging = true
         }
         resources {
-            excludes += listOf("META-INF/*")
+            excludes.addAll(listOf("META-INF/*"))
         }
     }
 
@@ -68,16 +68,12 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            debuggable = false
-            jniDebuggable = false
-            renderscriptDebuggable = false
-            pseudoLocalesEnabled = false
+            isDebuggable = false
         }
         debug {
             isMinifyEnabled = false
             isShrinkResources = false
             isDebuggable = true
-            jniDebuggable = true
         }
     }
 
@@ -140,7 +136,10 @@ dependencies {
 spotless {
     kotlin {
         target("**/*.kt")
-        kotlinGradlePlugin()
+        ktlint("1.2.1")
+    }
+    kotlinGradle {
+        target("*.gradle.kts")
         ktlint("1.2.1")
     }
 }

@@ -166,14 +166,14 @@ jobs:
 
       - name: Verify library
         run: |
-          ls -la app/src/main/cpp/build/libcopper-oxide.so
-          file app/src/main/cpp/build/libcopper-oxide.so
+          ls -la app/src/main/jniLibs/arm64-v8a/libcopper-oxide.so
+          file app/src/main/jniLibs/arm64-v8a/libcopper-oxide.so
 
       - name: Upload native library
         uses: actions/upload-artifact@v4
         with:
           name: native-lib-arm64
-          path: app/src/main/cpp/build/libcopper-oxide.so
+          path: app/src/main/jniLibs/arm64-v8a/libcopper-oxide.so
           retention-days: 7
 
   # Android build
