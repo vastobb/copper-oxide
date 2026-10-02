@@ -20,8 +20,8 @@ constexpr uint32_t kTextureCubeFaceCount = 6;
 
 // TextureManager passes the pixel format down as an opaque uint32_t. These are
 // the formats the GLES backend understands; the values are an internal contract
-// and callers only ever see them through TextureFormat.
-enum class TextureFormat : uint32_t {
+// and callers only ever see them through GLESTextureFormat.
+enum class GLESTextureFormat : uint32_t {
     Undefined = 0,
     // 8 bit per channel
     R8 = 1,
@@ -65,7 +65,7 @@ enum class TextureFormat : uint32_t {
 // Purpose of a texture. GLES derives renderability from the internal format
 // itself, so these bits only steer creation (level count, filtering, cube
 // sampling rules).
-enum class TextureUsage : uint32_t {
+enum class GLESTextureUsage : uint32_t {
     None = 0,
     Sampler = 1u << 0,
     ColorAttachment = 1u << 1,
@@ -73,12 +73,12 @@ enum class TextureUsage : uint32_t {
     Storage = 1u << 3,
 };
 
-inline uint32_t operator|(TextureUsage lhs, TextureUsage rhs) {
+inline uint32_t operator|(GLESTextureUsage lhs, GLESTextureUsage rhs) {
     return static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs);
 }
 
-// Note: TextureUsage::None always matches because it is zero.
-inline bool hasFlag(uint32_t bits, TextureUsage flag) {
+// Note: GLESTextureUsage::None always matches because it is zero.
+inline bool hasFlag(uint32_t bits, GLESTextureUsage flag) {
     const uint32_t mask = static_cast<uint32_t>(flag);
     return (bits & mask) == mask;
 }

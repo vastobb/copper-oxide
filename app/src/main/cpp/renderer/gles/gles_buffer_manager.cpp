@@ -91,19 +91,19 @@ GLenum GLESBufferManager::glTargetForUsage(uint32_t usage) {
     // The bits are checked in a fixed order because a buffer is normally bound to
     // exactly one target; Index wins over Vertex so index buffers keep the
     // element-array target that the state cache binds for drawing.
-    if (hasFlag(usage, BufferUsage::Index)) {
+    if (hasFlag(usage, GLESBufferUsage::Index)) {
         return GL_ELEMENT_ARRAY_BUFFER;
     }
-    if (hasFlag(usage, BufferUsage::Uniform)) {
+    if (hasFlag(usage, GLESBufferUsage::Uniform)) {
         return GL_UNIFORM_BUFFER;
     }
-    if (hasFlag(usage, BufferUsage::Storage)) {
+    if (hasFlag(usage, GLESBufferUsage::Storage)) {
         return GL_SHADER_STORAGE_BUFFER;
     }
-    if (hasFlag(usage, BufferUsage::TransferSrc)) {
+    if (hasFlag(usage, GLESBufferUsage::TransferSrc)) {
         return GL_COPY_READ_BUFFER;
     }
-    if (hasFlag(usage, BufferUsage::TransferDst)) {
+    if (hasFlag(usage, GLESBufferUsage::TransferDst)) {
         return GL_COPY_WRITE_BUFFER;
     }
     // GL_ARRAY_BUFFER is the fallback for usage 0 and for any bit this backend
@@ -113,16 +113,16 @@ GLenum GLESBufferManager::glTargetForUsage(uint32_t usage) {
 }
 
 GLenum GLESBufferManager::glStorageHint(uint32_t usage, uint32_t memory_flags) {
-    if (hasFlag(memory_flags, BufferMemoryFlags::Persistent)) {
+    if (hasFlag(memory_flags, GLESBufferMemoryFlags::Persistent)) {
         return GL_STREAM_DRAW;
     }
     // Uniform/storage/copy-source buffers are rewritten regularly, which is
     // exactly what GL_DYNAMIC_DRAW describes.
-    if (hasFlag(usage, BufferUsage::Uniform) || hasFlag(usage, BufferUsage::Storage) ||
-        hasFlag(usage, BufferUsage::TransferSrc)) {
+    if (hasFlag(usage, GLESBufferUsage::Uniform) || hasFlag(usage, GLESBufferUsage::Storage) ||
+        hasFlag(usage, GLESBufferUsage::TransferSrc)) {
         return GL_DYNAMIC_DRAW;
     }
-    if (hasFlag(usage, BufferUsage::TransferDst)) {
+    if (hasFlag(usage, GLESBufferUsage::TransferDst)) {
         // Written once, read once: the driver can discard it after the copy.
         return GL_STREAM_DRAW;
     }

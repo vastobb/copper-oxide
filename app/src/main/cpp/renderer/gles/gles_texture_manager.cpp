@@ -145,16 +145,16 @@ uint32_t bytesPerTexel(GLenum internal_format) {
 void blockExtent(uint32_t format, uint32_t* out_width, uint32_t* out_height) {
     *out_width = 0;
     *out_height = 0;
-    switch (static_cast<TextureFormat>(format)) {
-        case TextureFormat::ASTC4x4: *out_width = 4; *out_height = 4; break;
-        case TextureFormat::ASTC5x5: *out_width = 5; *out_height = 5; break;
-        case TextureFormat::ASTC6x6: *out_width = 6; *out_height = 6; break;
-        case TextureFormat::ASTC8x8: *out_width = 8; *out_height = 8; break;
-        case TextureFormat::ASTC10x10: *out_width = 10; *out_height = 10; break;
-        case TextureFormat::ASTC12x12: *out_width = 12; *out_height = 12; break;
-        case TextureFormat::ETC2RGB8:
-        case TextureFormat::ETC2RGBA8:
-        case TextureFormat::ETC2RGB8PunchthroughAlpha1:
+    switch (static_cast<GLESTextureFormat>(format)) {
+        case GLESTextureFormat::ASTC4x4: *out_width = 4; *out_height = 4; break;
+        case GLESTextureFormat::ASTC5x5: *out_width = 5; *out_height = 5; break;
+        case GLESTextureFormat::ASTC6x6: *out_width = 6; *out_height = 6; break;
+        case GLESTextureFormat::ASTC8x8: *out_width = 8; *out_height = 8; break;
+        case GLESTextureFormat::ASTC10x10: *out_width = 10; *out_height = 10; break;
+        case GLESTextureFormat::ASTC12x12: *out_width = 12; *out_height = 12; break;
+        case GLESTextureFormat::ETC2RGB8:
+        case GLESTextureFormat::ETC2RGBA8:
+        case GLESTextureFormat::ETC2RGB8PunchthroughAlpha1:
             *out_width = 4;
             *out_height = 4;
             break;
@@ -242,18 +242,18 @@ size_t GLESCTextureManager::liveTextureCount() const {
 }
 
 GLenum GLESCTextureManager::glInternalFormat(uint32_t format) {
-    switch (static_cast<TextureFormat>(format)) {
-        case TextureFormat::R8: return GL_R8;
-        case TextureFormat::RG8: return GL_RG8;
-        case TextureFormat::RGB8: return GL_RGBA8;  // ES has no sized RGB8 format
-        case TextureFormat::RGBA8: return GL_RGBA8;
-        case TextureFormat::SRGB8_ALPHA8: return GL_SRGB8_ALPHA8;
-        case TextureFormat::R16F: return GL_R16F;
-        case TextureFormat::RG16F: return GL_RG16F;
-        case TextureFormat::RGBA16F: return GL_RGBA16F;
-        case TextureFormat::R32F: return GL_R32F;
-        case TextureFormat::RG32F: return GL_RG32F;
-        case TextureFormat::RGBA32F: return GL_RGBA32F;
+    switch (static_cast<GLESTextureFormat>(format)) {
+        case GLESTextureFormat::R8: return GL_R8;
+        case GLESTextureFormat::RG8: return GL_RG8;
+        case GLESTextureFormat::RGB8: return GL_RGBA8;  // ES has no sized RGB8 format
+        case GLESTextureFormat::RGBA8: return GL_RGBA8;
+        case GLESTextureFormat::SRGB8_ALPHA8: return GL_SRGB8_ALPHA8;
+        case GLESTextureFormat::R16F: return GL_R16F;
+        case GLESTextureFormat::RG16F: return GL_RG16F;
+        case GLESTextureFormat::RGBA16F: return GL_RGBA16F;
+        case GLESTextureFormat::R32F: return GL_R32F;
+        case GLESTextureFormat::RG32F: return GL_RG32F;
+        case GLESTextureFormat::RGBA32F: return GL_RGBA32F;
         // R16 / RG16 / RGBA16 are deliberately absent. The Khronos headers give
         // GL_RGBA16 the same token as GL_RGBA8, and GL_R16 / GL_RG16 collide with
         // other ES 3.1 additions, so they cannot appear as distinct switch labels
@@ -262,21 +262,21 @@ GLenum GLESCTextureManager::glInternalFormat(uint32_t format) {
         // silently allocating a different format than the caller asked for. The
         // Vulkan backend maps these formats correctly, so a caller that needs
         // them must go through Vulkan or add the tokens under #ifndef guards.
-        case TextureFormat::Depth16: return GL_DEPTH_COMPONENT16;
-        case TextureFormat::Depth24: return GL_DEPTH_COMPONENT24;
-        case TextureFormat::Depth32F: return GL_DEPTH_COMPONENT32F;
-        case TextureFormat::Depth24Stencil8: return GL_DEPTH24_STENCIL8;
-        case TextureFormat::Depth32FStencil8: return GL_DEPTH32F_STENCIL8;
-        case TextureFormat::ASTC4x4: return GL_COMPRESSED_RGBA_ASTC_4x4_KHR;
-        case TextureFormat::ASTC5x5: return GL_COMPRESSED_RGBA_ASTC_5x5_KHR;
-        case TextureFormat::ASTC6x6: return GL_COMPRESSED_RGBA_ASTC_6x6_KHR;
-        case TextureFormat::ASTC8x8: return GL_COMPRESSED_RGBA_ASTC_8x8_KHR;
-        case TextureFormat::ASTC10x10: return GL_COMPRESSED_RGBA_ASTC_10x10_KHR;
-        case TextureFormat::ASTC12x12: return GL_COMPRESSED_RGBA_ASTC_12x12_KHR;
-        case TextureFormat::ETC2RGB8: return GL_COMPRESSED_RGB8_ETC2;
-        case TextureFormat::ETC2RGBA8: return GL_COMPRESSED_RGBA8_ETC2_EAC;
-        case TextureFormat::ETC2RGB8PunchthroughAlpha1: return GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2;
-        case TextureFormat::Undefined:
+        case GLESTextureFormat::Depth16: return GL_DEPTH_COMPONENT16;
+        case GLESTextureFormat::Depth24: return GL_DEPTH_COMPONENT24;
+        case GLESTextureFormat::Depth32F: return GL_DEPTH_COMPONENT32F;
+        case GLESTextureFormat::Depth24Stencil8: return GL_DEPTH24_STENCIL8;
+        case GLESTextureFormat::Depth32FStencil8: return GL_DEPTH32F_STENCIL8;
+        case GLESTextureFormat::ASTC4x4: return GL_COMPRESSED_RGBA_ASTC_4x4_KHR;
+        case GLESTextureFormat::ASTC5x5: return GL_COMPRESSED_RGBA_ASTC_5x5_KHR;
+        case GLESTextureFormat::ASTC6x6: return GL_COMPRESSED_RGBA_ASTC_6x6_KHR;
+        case GLESTextureFormat::ASTC8x8: return GL_COMPRESSED_RGBA_ASTC_8x8_KHR;
+        case GLESTextureFormat::ASTC10x10: return GL_COMPRESSED_RGBA_ASTC_10x10_KHR;
+        case GLESTextureFormat::ASTC12x12: return GL_COMPRESSED_RGBA_ASTC_12x12_KHR;
+        case GLESTextureFormat::ETC2RGB8: return GL_COMPRESSED_RGB8_ETC2;
+        case GLESTextureFormat::ETC2RGBA8: return GL_COMPRESSED_RGBA8_ETC2_EAC;
+        case GLESTextureFormat::ETC2RGB8PunchthroughAlpha1: return GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2;
+        case GLESTextureFormat::Undefined:
         default:
             // Unknown opaque format: RGBA8 is the one internal format that is
             // always colour renderable and texture filterable.
@@ -292,19 +292,19 @@ bool GLESCTextureManager::isCompressedFormat(uint32_t format) {
 }
 
 uint32_t GLESCTextureManager::compressedBlockSize(uint32_t format) {
-    switch (static_cast<TextureFormat>(format)) {
+    switch (static_cast<GLESTextureFormat>(format)) {
         // Every ASTC block size is a 128 bit block.
-        case TextureFormat::ASTC4x4:
-        case TextureFormat::ASTC5x5:
-        case TextureFormat::ASTC6x6:
-        case TextureFormat::ASTC8x8:
-        case TextureFormat::ASTC10x10:
-        case TextureFormat::ASTC12x12:
+        case GLESTextureFormat::ASTC4x4:
+        case GLESTextureFormat::ASTC5x5:
+        case GLESTextureFormat::ASTC6x6:
+        case GLESTextureFormat::ASTC8x8:
+        case GLESTextureFormat::ASTC10x10:
+        case GLESTextureFormat::ASTC12x12:
             return 16;
-        case TextureFormat::ETC2RGB8:
-        case TextureFormat::ETC2RGB8PunchthroughAlpha1:
+        case GLESTextureFormat::ETC2RGB8:
+        case GLESTextureFormat::ETC2RGB8PunchthroughAlpha1:
             return 8;
-        case TextureFormat::ETC2RGBA8:
+        case GLESTextureFormat::ETC2RGBA8:
             return 16;
         default:
             return 0;
@@ -419,9 +419,9 @@ GLenum GLESCTextureManager::resolveInternalFormat(uint32_t format, bool* out_fal
     if (out_fallback != nullptr) {
         *out_fallback = false;
     }
-    const TextureFormat requested = static_cast<TextureFormat>(format);
+    const GLESTextureFormat requested = static_cast<GLESTextureFormat>(format);
     const bool compressed = isCompressedFormat(format);
-    const bool astc = requested >= TextureFormat::ASTC4x4 && requested <= TextureFormat::ASTC12x12;
+    const bool astc = requested >= GLESTextureFormat::ASTC4x4 && requested <= GLESTextureFormat::ASTC12x12;
 
     if (compressed && !astc) {
         // ETC2 is GLES 3.0 core, so it is decodable everywhere the backend runs.
@@ -448,7 +448,7 @@ GLenum GLESCTextureManager::resolveInternalFormat(uint32_t format, bool* out_fal
         return GL_RGBA8;
     }
 
-    if (requested == TextureFormat::SRGB8_ALPHA8 && !glesAtLeast(3, 1)) {
+    if (requested == GLESTextureFormat::SRGB8_ALPHA8 && !glesAtLeast(3, 1)) {
         // sRGB sized formats became core in ES 3.1; before that they exist but
         // are not guaranteed to be renderable, so plain RGBA8 keeps the texture
         // usable (linear values).
@@ -457,7 +457,7 @@ GLenum GLESCTextureManager::resolveInternalFormat(uint32_t format, bool* out_fal
         }
         return GL_RGBA8;
     }
-    if (requested == TextureFormat::Undefined) {
+    if (requested == GLESTextureFormat::Undefined) {
         if (out_fallback != nullptr) {
             *out_fallback = true;
         }
@@ -985,7 +985,7 @@ bool GLESCTextureManager::onLoadTextureFromMemory(uint64_t handle, const void* d
 
     // Levels are either filled by the caller or by glGenerateMipmap below.
     const uint32_t levels = generate_mipmaps ? mipChainLength(width, height, 1) : 1;
-    if (!createTextureObject(handle, GL_TEXTURE_2D, width, height, 1, 1, format, static_cast<uint32_t>(TextureUsage::Sampler),
+    if (!createTextureObject(handle, GL_TEXTURE_2D, width, height, 1, 1, format, static_cast<uint32_t>(GLESTextureUsage::Sampler),
                              levels)) {
         return false;
     }

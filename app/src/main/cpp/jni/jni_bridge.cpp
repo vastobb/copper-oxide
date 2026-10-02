@@ -621,7 +621,7 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateGraphicsP
     if (!guard) return 0;
     ShaderManager* shaders = guard.get()->getShaderManager();
     if (!shaders) return 0;
-    ShaderManager::PipelineLayoutDesc layout;
+    PipelineLayoutDesc layout;
     return static_cast<jlong>(shaders->createGraphicsPipeline(static_cast<uint64_t>(vertexShader),
                                                                 static_cast<uint64_t>(fragmentShader),
                                                                 layout));

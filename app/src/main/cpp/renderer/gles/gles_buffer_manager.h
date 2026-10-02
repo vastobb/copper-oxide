@@ -20,7 +20,7 @@ class GLESCRenderer;
 // are declared here (instead of leaking GL names into callers) and translated
 // to a buffer target plus a storage hint by the manager. The numbers only have
 // to stay stable inside this backend.
-enum class BufferUsage : uint32_t {
+enum class GLESBufferUsage : uint32_t {
     None = 0,
     Vertex = 1u << 0,       // GL_ARRAY_BUFFER
     Index = 1u << 1,        // GL_ELEMENT_ARRAY_BUFFER
@@ -32,28 +32,28 @@ enum class BufferUsage : uint32_t {
 
 // Memory hints. GLES cannot promise anything about placement, so these only
 // steer the driver's storage hint and the host mapping behaviour.
-enum class BufferMemoryFlags : uint32_t {
+enum class GLESBufferMemoryFlags : uint32_t {
     None = 0,
     Persistent = 1u << 0,  // mapped/unmapped every frame: use stream storage
     Readback = 1u << 1,     // GPU -> CPU reads are expected on this buffer
 };
 
-inline uint32_t operator|(BufferUsage lhs, BufferUsage rhs) {
+inline uint32_t operator|(GLESBufferUsage lhs, GLESBufferUsage rhs) {
     return static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs);
 }
 
-inline uint32_t operator|(BufferMemoryFlags lhs, BufferMemoryFlags rhs) {
+inline uint32_t operator|(GLESBufferMemoryFlags lhs, GLESBufferMemoryFlags rhs) {
     return static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs);
 }
 
-// Note: BufferUsage::None / BufferMemoryFlags::None always match because they
+// Note: GLESBufferUsage::None / GLESBufferMemoryFlags::None always match because they
 // are zero; callers that need "no such bit" should test the value directly.
-inline bool hasFlag(uint32_t bits, BufferUsage flag) {
+inline bool hasFlag(uint32_t bits, GLESBufferUsage flag) {
     const uint32_t mask = static_cast<uint32_t>(flag);
     return (bits & mask) == mask;
 }
 
-inline bool hasFlag(uint32_t bits, BufferMemoryFlags flag) {
+inline bool hasFlag(uint32_t bits, GLESBufferMemoryFlags flag) {
     const uint32_t mask = static_cast<uint32_t>(flag);
     return (bits & mask) == mask;
 }
