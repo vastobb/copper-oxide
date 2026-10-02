@@ -174,7 +174,7 @@ private:
     bool create_logical_device();
     bool create_surface();
     bool create_swapchain();
-    void destroy_swapchain();
+    bool destroy_swapchain();
     bool create_sync_objects();
     bool create_descriptor_pool();
     bool create_pipeline_cache();
