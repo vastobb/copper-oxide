@@ -8,6 +8,37 @@ namespace copper {
 RendererConfig::RendererConfig() = default;
 RendererConfig::~RendererConfig() = default;
 
+// Preset configurations
+const RendererConfig RendererConfig::Default = RendererConfig();
+
+const RendererConfig RendererConfig::Performance = [] {
+    RendererConfig config;
+    config.enableValidation = false;
+    config.enableProfiling = false;
+    config.targetFps = 120;
+    config.lowLatencyMode = true;
+    return config;
+}();
+
+const RendererConfig RendererConfig::BatterySaver = [] {
+    RendererConfig config;
+    config.targetFps = 30;
+    config.batterySaverMode = true;
+    config.maxFramesInFlight = 2;
+    config.textureCacheSizeMb = 128;
+    config.bufferPoolSizeMb = 64;
+    return config;
+}();
+
+const RendererConfig RendererConfig::Debug = [] {
+    RendererConfig config;
+    config.enableValidation = true;
+    config.enableDebugMarkers = true;
+    config.enableProfiling = true;
+    config.targetFps = 60;
+    return config;
+}();
+
 RendererConfig RendererConfig::createForGPU(GPUVendor vendor, GPUArchitecture arch) {
     RendererConfig config;
 
