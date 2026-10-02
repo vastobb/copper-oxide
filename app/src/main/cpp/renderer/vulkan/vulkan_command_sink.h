@@ -93,6 +93,7 @@ private:
     VkCommandBuffer command_buffer_ = VK_NULL_HANDLE;
     uint32_t frame_index_ = 0;
     std::vector<VkFramebuffer> swapchain_framebuffers_;
+    IndirectResolver indirect_resolver_ = nullptr;
     uint64_t dropped_ = 0;
     bool in_render_pass_ = false;
 };

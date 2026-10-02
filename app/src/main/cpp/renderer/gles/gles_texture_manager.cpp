@@ -1,5 +1,7 @@
 #include "gles_texture_manager.h"
 
+#include "gles_es31_compat.h"
+
 #include "gles_renderer.h"
 
 #include <EGL/egl.h>
@@ -822,8 +824,18 @@ void GLESCTextureManager::copyLayerOnCpu(const TextureObject& src, const Texture
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     const GLuint previous = boundTexture(read_target);
     glBindTexture(read_target, src.texture);
-    glGetTexImage(read_target, static_cast<GLint>(src_mip), glDataFormat(src.internal_format),
-                  glDataType(src.internal_format), scratch.data());
+    // glGetTexImage needs an explicit extent and border; the scratch buffer was
+    // sized for exactly this level, and a non-zero border would read past it.
+    PFNGLGETTEXIMAGEPROC read_back = copper::gles::getTexImage();
+    if (read_back == nullptr) {
+        LOGW("glGetTexImage is unavailable on this ES context; the CPU layer copy is skipped");
+        glBindTexture(read_target, previous);
+        glPixelStorei(GL_PACK_ALIGNMENT, previous_pack);
+        return;
+    }
+    read_back(read_target, static_cast<GLint>(src_mip), glDataFormat(src.internal_format),
+              glDataType(src.internal_format), static_cast<GLsizei>(width),
+              static_cast<GLsizei>(height), 0, scratch.data());
     glBindTexture(read_target, previous);
     glPixelStorei(GL_PACK_ALIGNMENT, previous_pack);
 
@@ -875,10 +887,16 @@ void GLESCTextureManager::onCopyTexture(uint64_t src, uint64_t dst, uint32_t src
     const bool plain_level = source.target == destination.target &&
                              (source.target == GL_TEXTURE_2D || both_3d);
     if (plain_level && src_layer == dst_layer && glesAtLeast(3, 1)) {
-        glCopyImageSubData(source.target, static_cast<GLint>(src_mip), 0, 0, 0, destination.target,
-                           static_cast<GLint>(dst_mip), 0, 0, 0, static_cast<GLsizei>(width),
-                           static_cast<GLsizei>(height), static_cast<GLsizei>(depth));
-        return;
+        PFNGLCOPYIMAGESUBDATAPROC device_copy = copper::gles::copyImageSubData();
+        if (device_copy != nullptr) {
+            device_copy(source.texture, static_cast<GLint>(src_mip), 0, 0, 0, destination.texture,
+                        static_cast<GLint>(dst_mip), 0, 0, 0, static_cast<GLsizei>(width),
+                        static_cast<GLsizei>(height), static_cast<GLsizei>(depth));
+            return;
+        }
+        // ES 3.1 claimed but the entry point is unreachable; take the CPU path
+        // rather than silently dropping the copy.
+        LOGW("glCopyImageSubData is unavailable; falling back to a CPU round trip");
     }
 
     if (isCompressedFormat(source.format)) {
