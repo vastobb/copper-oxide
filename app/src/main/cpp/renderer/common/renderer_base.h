@@ -186,7 +186,8 @@ struct RendererLimits {
 
 class RendererBase {
 public:
-    virtual ~RendererBase() = default;
+    RendererBase();
+    virtual ~RendererBase();
 
     // Initialization
     virtual bool initialize(const RendererConfig& config);
@@ -244,10 +245,14 @@ public:
     // Wait for idle
     virtual void waitIdle();
 
+    // Internal methods for derived classes
+    virtual void incrementDrawCalls(uint32_t count);
+    virtual void updateMemoryStats(uint64_t gpuMem, uint64_t cpuMem);
+
     // Backend-specific methods (must be implemented by derived classes)
     virtual bool detectGPU() = 0;
-    virtual void applyGPUWorkarounds(GPUVendor vendor, GPUArchitecture arch) = 0;
-    virtual void optimizeForGPU(GPUVendor vendor, GPUArchitecture arch) = 0;
+    virtual void onApplyGPUWorkarounds(GPUVendor vendor, GPUArchitecture arch) = 0;
+    virtual void onOptimizeForGPU(GPUVendor vendor, GPUArchitecture arch) = 0;
     virtual bool initializeManagers() = 0;
     virtual bool onBeginFrame() = 0;
     virtual void onEndFrame() = 0;
