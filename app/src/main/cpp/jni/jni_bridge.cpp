@@ -69,14 +69,6 @@ JNIEnv* getJNIEnv() {
     return env;
 }
 
-RendererBase* getRenderer() {
-    // Kept for source compatibility with existing call sites. Callers that
-    // then use the returned pointer for more than one operation should
-    // prefer RendererGuard, which keeps the renderer alive for the call.
-    std::lock_guard<std::mutex> lock(g_renderer_mutex);
-    return g_renderer.get();
-}
-
 void setRenderer(std::unique_ptr<RendererBase> renderer, uint64_t owner) {
     std::unique_ptr<RendererBase> displaced;
     {
@@ -102,13 +94,32 @@ namespace {
 constexpr uint32_t kMaxVertexBindings = 16;
 
 // Holds the renderer alive for the duration of one JNI call. Shutdown() can
-// otherwise destroy the renderer between getRenderer() and the caller's
-// first use, which is a use-after-free.
+// otherwise destroy the renderer between the lookup and the caller's first use,
+// which is a use-after-free.
+// Returns the renderer only when `owner` is the instance that installed it.
+//
+// A displaced instance's render loop keeps running - the native shutdown it did
+// not ask for does not stop its Kotlin loop - and it used to read whatever
+// renderer was in the global slot, so it reported the NEW owner's frame
+// statistics. Ownership has to be checked at every entry point that touches the
+// renderer, not only at initialize and shutdown.
+RendererBase* renderer_for_owner(uint64_t owner) {
+    std::lock_guard<std::mutex> lock(g_renderer_mutex);
+    if (g_renderer == nullptr || g_renderer_owner != owner) {
+        return nullptr;
+    }
+    return g_renderer.get();
+}
+
 class RendererGuard {
 public:
-    RendererGuard() {
+    explicit RendererGuard(uint64_t owner = 0) {
         g_renderer_mutex.lock();
-        renderer_ = g_renderer.get();
+        // owner 0 means "any owner", which is only correct for calls that cannot
+        // reach a renderer belonging to another instance in practice.
+        if (owner == 0 || (g_renderer != nullptr && g_renderer_owner == owner)) {
+            renderer_ = g_renderer.get();
+        }
     }
     ~RendererGuard() { g_renderer_mutex.unlock(); }
 
@@ -269,35 +280,35 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeShutdown(
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBeginFrame(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (!renderer) return JNI_FALSE;
     return renderer->beginFrame() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeEndFrame(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (renderer) renderer->endFrame();
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativePresent(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (renderer) renderer->present();
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOnSurfaceCreated(
-    JNIEnv* env, jobject thiz, jobject surface
+    JNIEnv* env, jobject thiz, jobject surface, jlong owner
 ) {
     LOGI("nativeOnSurfaceCreated");
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (renderer) {
         ANativeWindow* native_window = ANativeWindow_fromSurface(env, surface);
         if (native_window) {
@@ -309,10 +320,10 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOnSurfaceCreate
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOnSurfaceChanged(
-    JNIEnv* env, jobject thiz, jint width, jint height
+    JNIEnv* env, jobject thiz, jint width, jint height, jlong owner
 ) {
     LOGI("nativeOnSurfaceChanged: %dx%d", width, height);
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (renderer) {
         renderer->onSurfaceChanged(width, height);
     }
@@ -320,10 +331,10 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOnSurfaceChange
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOnSurfaceDestroyed(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
     LOGI("nativeOnSurfaceDestroyed");
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (renderer) {
         renderer->onSurfaceDestroyed();
     }
@@ -331,9 +342,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOnSurfaceDestro
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOnMemoryPressure(
-    JNIEnv* env, jobject thiz, jint level
+    JNIEnv* env, jobject thiz, jint level, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (renderer) {
         renderer->onMemoryPressure(level);
     }
@@ -341,9 +352,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOnMemoryPressur
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOnThermalThrottling(
-    JNIEnv* env, jobject thiz, jfloat temperatureRatio
+    JNIEnv* env, jobject thiz, jfloat temperatureRatio, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (renderer) {
         renderer->onThermalThrottling(temperatureRatio);
     }
@@ -351,128 +362,128 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOnThermalThrott
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetBackend(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (!renderer) return static_cast<jint>(RendererBackend::Unknown);
     return static_cast<jint>(renderer->getBackend());
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeIsInitialized(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     return renderer && renderer->isInitialized() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeWaitIdle(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (renderer) renderer->waitIdle();
 }
 
 // Frame stats
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetFrameNumber(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     return renderer ? renderer->getFrameNumber() : 0;
 }
 
 extern "C" JNIEXPORT jdouble JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetFrameTimeMs(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     return renderer ? renderer->getFrameTimeMs() : 0.0;
 }
 
 extern "C" JNIEXPORT jdouble JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetCpuTimeMs(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     return renderer ? renderer->getCpuTimeMs() : 0.0;
 }
 
 extern "C" JNIEXPORT jdouble JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetGpuTimeMs(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     return renderer ? renderer->getGpuTimeMs() : 0.0;
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetDrawCalls(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     return renderer ? renderer->getDrawCalls() : 0;
 }
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetGpuMemoryUsed(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     return renderer ? renderer->getGpuMemoryUsed() : 0;
 }
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetCpuMemoryUsed(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     return renderer ? renderer->getCpuMemoryUsed() : 0;
 }
 
 // GPU info
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetGpuRendererString(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (!renderer) return env->NewStringUTF("Unknown");
     return env->NewStringUTF(renderer->getGpuRendererString().c_str());
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetGpuVendorString(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (!renderer) return env->NewStringUTF("Unknown");
     return env->NewStringUTF(renderer->getGpuVendorString().c_str());
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetGpuVersionString(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (!renderer) return env->NewStringUTF("Unknown");
     return env->NewStringUTF(renderer->getGpuVersionString().c_str());
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetGpuVendor(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (!renderer) return static_cast<jint>(GPUVendor::Unknown);
     return static_cast<jint>(renderer->getGpuVendor());
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetGpuArchitecture(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (!renderer) return static_cast<jint>(GPUArchitecture::Unknown);
     return static_cast<jint>(renderer->getGpuArchitecture());
 }
@@ -480,18 +491,18 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetGpuArchitect
 // Feature queries
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeSupportsFeature(
-    JNIEnv* env, jobject thiz, jint feature
+    JNIEnv* env, jobject thiz, jint feature, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (!renderer) return JNI_FALSE;
     return renderer->supportsFeature(static_cast<RendererFeature>(feature)) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeIsExtensionSupported(
-    JNIEnv* env, jobject thiz, jstring extension
+    JNIEnv* env, jobject thiz, jstring extension, jlong owner
 ) {
-    RendererBase* renderer = getRenderer();
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
     if (!renderer) return JNI_FALSE;
     const char* ext = env->GetStringUTFChars(extension, nullptr);
     bool result = renderer->isExtensionSupported(ext);
@@ -509,9 +520,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeIsExtensionSupp
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeAreManagersReady(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return JNI_FALSE;
     RendererBase* renderer = guard.get();
     const bool ready = renderer->getBufferManager() != nullptr &&
@@ -523,9 +534,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeAreManagersRead
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateBuffer(
-    JNIEnv* env, jobject thiz, jlong size, jint usage
+    JNIEnv* env, jobject thiz, jlong size, jint usage, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard || size <= 0) return 0;
     BufferManager* buffers = guard.get()->getBufferManager();
     if (!buffers) return 0;
@@ -535,9 +546,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateBuffer(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDestroyBuffer(
-    JNIEnv* env, jobject thiz, jlong handle
+    JNIEnv* env, jobject thiz, jlong handle, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return;
     if (BufferManager* buffers = guard.get()->getBufferManager()) {
         buffers->destroyBuffer(static_cast<uint64_t>(handle));
@@ -546,9 +557,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDestroyBuffer(
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeUpdateBuffer(
-    JNIEnv* env, jobject thiz, jlong handle, jlong offset, jbyteArray data
+    JNIEnv* env, jobject thiz, jlong handle, jlong offset, jbyteArray data, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard || data == nullptr) return JNI_FALSE;
     BufferManager* buffers = guard.get()->getBufferManager();
     if (!buffers) return JNI_FALSE;
@@ -575,9 +586,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeUpdateBuffer(
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateTexture2D(
-    JNIEnv* env, jobject thiz, jint width, jint height, jint format, jint usage, jint mipLevels
+    JNIEnv* env, jobject thiz, jint width, jint height, jint format, jint usage, jint mipLevels, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return 0;
     TextureManager* textures = guard.get()->getTextureManager();
     if (!textures) return 0;
@@ -590,9 +601,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateTexture2D
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeUploadTexture(
-    JNIEnv* env, jobject thiz, jlong handle, jint mipLevel, jbyteArray data
+    JNIEnv* env, jobject thiz, jlong handle, jint mipLevel, jbyteArray data, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard || data == nullptr) return JNI_FALSE;
     TextureManager* textures = guard.get()->getTextureManager();
     if (!textures) return JNI_FALSE;
@@ -620,9 +631,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeUploadTexture(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDestroyTexture(
-    JNIEnv* env, jobject thiz, jlong handle
+    JNIEnv* env, jobject thiz, jlong handle, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return;
     if (TextureManager* textures = guard.get()->getTextureManager()) {
         textures->destroyTexture(static_cast<uint64_t>(handle));
@@ -631,9 +642,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDestroyTexture(
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateShader(
-    JNIEnv* env, jobject thiz, jint stage, jstring source, jobjectArray defines
+    JNIEnv* env, jobject thiz, jint stage, jstring source, jobjectArray defines, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard || source == nullptr) return 0;
     ShaderManager* shaders = guard.get()->getShaderManager();
     if (!shaders) return 0;
@@ -667,9 +678,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateShader(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDestroyShader(
-    JNIEnv* env, jobject thiz, jlong handle
+    JNIEnv* env, jobject thiz, jlong handle, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return;
     if (ShaderManager* shaders = guard.get()->getShaderManager()) {
         shaders->destroyShader(static_cast<uint64_t>(handle));
@@ -678,9 +689,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDestroyShader(
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateGraphicsPipeline(
-    JNIEnv* env, jobject thiz, jlong vertexShader, jlong fragmentShader
+    JNIEnv* env, jobject thiz, jlong vertexShader, jlong fragmentShader, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return 0;
     ShaderManager* shaders = guard.get()->getShaderManager();
     if (!shaders) return 0;
@@ -692,9 +703,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCreateGraphicsP
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDestroyPipeline(
-    JNIEnv* env, jobject thiz, jlong handle
+    JNIEnv* env, jobject thiz, jlong handle, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return;
     if (ShaderManager* shaders = guard.get()->getShaderManager()) {
         shaders->destroyPipeline(static_cast<uint64_t>(handle));
@@ -703,9 +714,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDestroyPipeline
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBindPipeline(
-    JNIEnv* env, jobject thiz, jlong pipeline
+    JNIEnv* env, jobject thiz, jlong pipeline, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return;
     if (StateManager* state = guard.get()->getStateManager()) {
         state->bindPipeline(static_cast<uint64_t>(pipeline));
@@ -715,9 +726,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBindPipeline(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBindVertexBuffers(
-    JNIEnv* env, jobject thiz, jint first_binding, jlongArray buffers, jintArray offsets
+    JNIEnv* env, jobject thiz, jint first_binding, jlongArray buffers, jintArray offsets, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard || buffers == nullptr) return;
     StateManager* state = guard.get()->getStateManager();
     if (!state) return;
@@ -750,9 +761,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBindVertexBuffe
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBindIndexBuffer(
-    JNIEnv* env, jobject thiz, jlong buffer, jint indexType
+    JNIEnv* env, jobject thiz, jlong buffer, jint indexType, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return;
     if (StateManager* state = guard.get()->getStateManager()) {
         state->bindIndexBuffer(static_cast<uint64_t>(buffer), static_cast<uint32_t>(indexType));
@@ -762,9 +773,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBindIndexBuffer
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeSetViewport(
-    JNIEnv* env, jobject thiz, jfloat x, jfloat y, jfloat width, jfloat height
+    JNIEnv* env, jobject thiz, jfloat x, jfloat y, jfloat width, jfloat height, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return;
     if (StateManager* state = guard.get()->getStateManager()) {
         state->setViewport(x, y, width, height, 0.0f, 1.0f);
@@ -774,9 +785,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeSetViewport(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeSetScissor(
-    JNIEnv* env, jobject thiz, jint x, jint y, jint width, jint height
+    JNIEnv* env, jobject thiz, jint x, jint y, jint width, jint height, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return;
     if (StateManager* state = guard.get()->getStateManager()) {
         state->setScissor(x, y, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
@@ -786,9 +797,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeSetScissor(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBindFramebuffer(
-    JNIEnv* env, jobject thiz, jlong framebuffer
+    JNIEnv* env, jobject thiz, jlong framebuffer, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return;
     if (StateManager* state = guard.get()->getStateManager()) {
         state->setFramebuffer(static_cast<uint64_t>(framebuffer));
@@ -798,9 +809,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeBindFramebuffer
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDraw(
-    JNIEnv* env, jobject thiz, jint vertexCount, jint instanceCount, jint firstVertex, jint firstInstance
+    JNIEnv* env, jobject thiz, jint vertexCount, jint instanceCount, jint firstVertex, jint firstInstance, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return;
     if (CommandBuffer* commands = guard.get()->getCommandBuffer()) {
         commands->draw(static_cast<uint32_t>(vertexCount), static_cast<uint32_t>(instanceCount),
@@ -814,9 +825,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDraw(
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDrawIndexed(
     JNIEnv* env, jobject thiz, jint indexCount, jint instanceCount, jint firstIndex, jint vertexOffset,
-    jint firstInstance
+    jint firstInstance, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return;
     if (CommandBuffer* commands = guard.get()->getCommandBuffer()) {
         commands->drawIndexed(static_cast<uint32_t>(indexCount), static_cast<uint32_t>(instanceCount),
@@ -830,9 +841,9 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeDrawIndexed(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeResetFrameStats(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererGuard guard;
+    RendererGuard guard(owner);
     if (!guard) return;
     if (Profiler* profiler = guard.get()->getProfiler()) {
         profiler->reset();

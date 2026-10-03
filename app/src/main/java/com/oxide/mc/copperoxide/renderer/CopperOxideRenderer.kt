@@ -170,7 +170,7 @@ open class CopperOxideRenderer(
 
         if (result) {
             initialized = true
-            currentBackend = RendererBackend.entries.getOrElse(nativeGetBackend()) { RendererBackend.UNKNOWN }
+            currentBackend = RendererBackend.entries.getOrElse(nativeGetBackend(ownerTag)) { RendererBackend.UNKNOWN }
             Log.i(TAG, "Renderer initialized with backend: $currentBackend")
             startRenderLoop()
         } else {
@@ -203,7 +203,7 @@ open class CopperOxideRenderer(
                 // is not an error, but it must not be reported as a frame: a
                 // callback that fires whether or not anything rendered tells a
                 // caller nothing and hides a renderer that never draws.
-                val rendered = nativeBeginFrame()
+                val rendered = nativeBeginFrame(ownerTag)
                 if (rendered) {
                     // Render frame here - this is where Minecraft would submit draw calls
                     onRenderFrame()
@@ -212,8 +212,8 @@ open class CopperOxideRenderer(
                     // context current.
                     drainRenderWork()
 
-                    nativeEndFrame()
-                    nativePresent()
+                    nativeEndFrame(ownerTag)
+                    nativePresent(ownerTag)
                 } else {
                     // The backend could not acquire an image. Work submitted for
                     // this frame is still run, so a caller waiting on it is not
@@ -330,13 +330,13 @@ open class CopperOxideRenderer(
      */
     fun getFrameStats(): FrameStats {
         return FrameStats(
-            frameNumber = nativeGetFrameNumber(),
-            frameTimeMs = nativeGetFrameTimeMs(),
-            cpuTimeMs = nativeGetCpuTimeMs(),
-            gpuTimeMs = nativeGetGpuTimeMs(),
-            drawCalls = nativeGetDrawCalls(),
-            gpuMemoryUsed = nativeGetGpuMemoryUsed(),
-            cpuMemoryUsed = nativeGetCpuMemoryUsed()
+            frameNumber = nativeGetFrameNumber(ownerTag),
+            frameTimeMs = nativeGetFrameTimeMs(ownerTag),
+            cpuTimeMs = nativeGetCpuTimeMs(ownerTag),
+            gpuTimeMs = nativeGetGpuTimeMs(ownerTag),
+            drawCalls = nativeGetDrawCalls(ownerTag),
+            gpuMemoryUsed = nativeGetGpuMemoryUsed(ownerTag),
+            cpuMemoryUsed = nativeGetCpuMemoryUsed(ownerTag)
         )
     }
 
@@ -345,11 +345,11 @@ open class CopperOxideRenderer(
      */
     fun getGpuInfo(): GpuInfo {
         return GpuInfo(
-            rendererString = nativeGetGpuRendererString(),
-            vendorString = nativeGetGpuVendorString(),
-            versionString = nativeGetGpuVersionString(),
-            vendor = GpuVendor.entries.getOrElse(nativeGetGpuVendor()) { GpuVendor.UNKNOWN },
-            architecture = GpuArchitecture.entries.getOrElse(nativeGetGpuArchitecture()) { GpuArchitecture.UNKNOWN },
+            rendererString = nativeGetGpuRendererString(ownerTag),
+            vendorString = nativeGetGpuVendorString(ownerTag),
+            versionString = nativeGetGpuVersionString(ownerTag),
+            vendor = GpuVendor.entries.getOrElse(nativeGetGpuVendor(ownerTag)) { GpuVendor.UNKNOWN },
+            architecture = GpuArchitecture.entries.getOrElse(nativeGetGpuArchitecture(ownerTag)) { GpuArchitecture.UNKNOWN },
             supportsVulkan = currentBackend == RendererBackend.VULKAN
         )
     }
@@ -359,14 +359,14 @@ open class CopperOxideRenderer(
      */
     fun supportsFeature(feature: RendererFeature): Boolean {
         // The bit value is the wire format; ordinals only match by coincidence.
-        return nativeSupportsFeature(feature.bit)
+        return nativeSupportsFeature(feature.bit, ownerTag)
     }
 
     /**
      * Check if an extension is supported
      */
     fun isExtensionSupported(extension: String): Boolean {
-        return nativeIsExtensionSupported(extension)
+        return nativeIsExtensionSupported(extension, ownerTag)
     }
 
     /**
@@ -375,14 +375,14 @@ open class CopperOxideRenderer(
     fun onSurfaceChanged(width: Int, height: Int) {
         surfaceWidth = width
         surfaceHeight = height
-        nativeOnSurfaceChanged(width, height)
+        nativeOnSurfaceChanged(width, height, ownerTag)
     }
 
     /**
      * Handle surface destruction
      */
     fun onSurfaceDestroyed() {
-        nativeOnSurfaceDestroyed()
+        nativeOnSurfaceDestroyed(ownerTag)
         surface = null
     }
 
@@ -390,14 +390,14 @@ open class CopperOxideRenderer(
      * Handle memory pressure
      */
     fun onMemoryPressure(level: Int) {
-        nativeOnMemoryPressure(level)
+        nativeOnMemoryPressure(level, ownerTag)
     }
 
     /**
      * Handle thermal throttling
      */
     fun onThermalThrottling(temperatureRatio: Float) {
-        nativeOnThermalThrottling(temperatureRatio)
+        nativeOnThermalThrottling(temperatureRatio, ownerTag)
     }
 
     /**
@@ -433,7 +433,7 @@ open class CopperOxideRenderer(
      * Wait for GPU idle
      */
     fun waitIdle() {
-        nativeWaitIdle()
+        nativeWaitIdle(ownerTag)
     }
 
     /**
@@ -474,134 +474,80 @@ open class CopperOxideRenderer(
     }
 
     // Native methods
-    external private fun nativeInitialize(
-        surface: Surface,
-        preferredBackend: Int,
-        enableValidation: Boolean,
-        enableDebugMarkers: Boolean,
-        enableProfiling: Boolean,
-        enableMultithreaded: Boolean,
-        enableAsyncShaderCompilation: Boolean,
-        enableAsyncResourceLoading: Boolean,
-        enableResourcePooling: Boolean,
-        enableCommandBufferReuse: Boolean,
-        enableStateCaching: Boolean,
-        enableDrawCallBatching: Boolean,
-        enablePipelineCaching: Boolean,
-        enableDescriptorCaching: Boolean,
-        enableTextureStreaming: Boolean,
-        enableTextureCompression: Boolean,
-        enableMipmapGeneration: Boolean,
-        maxFramesInFlight: Int,
-        maxCommandBuffersPerFrame: Int,
-        maxDescriptorSets: Int,
-        maxPushConstantsSize: Int,
-        textureCacheSizeMb: Int,
-        shaderCacheSizeMb: Int,
-        bufferPoolSizeMb: Int,
-        frameTimeoutMs: Int,
-        vsyncEnabled: Boolean,
-        targetFps: Int,
-        lowLatencyMode: Boolean,
-        batterySaverMode: Boolean,
-        thermalThrottlingAware: Boolean,
-        thermalThrottleThreshold: Float,
-        ownerTag: Long
-    ): Boolean
+    external private fun nativeInitialize(surface: Surface, preferredBackend: Int, enableValidation: Boolean, enableDebugMarkers: Boolean, enableProfiling: Boolean, enableMultithreaded: Boolean, enableAsyncShaderCompilation: Boolean, enableAsyncResourceLoading: Boolean, enableResourcePooling: Boolean, enableCommandBufferReuse: Boolean, enableStateCaching: Boolean, enableDrawCallBatching: Boolean, enablePipelineCaching: Boolean, enableDescriptorCaching: Boolean, enableTextureStreaming: Boolean, enableTextureCompression: Boolean, enableMipmapGeneration: Boolean, maxFramesInFlight: Int, maxCommandBuffersPerFrame: Int, maxDescriptorSets: Int, maxPushConstantsSize: Int, textureCacheSizeMb: Int, shaderCacheSizeMb: Int, bufferPoolSizeMb: Int, frameTimeoutMs: Int, vsyncEnabled: Boolean, targetFps: Int, lowLatencyMode: Boolean, batterySaverMode: Boolean, thermalThrottlingAware: Boolean, thermalThrottleThreshold: Float, ownerTag: Long): Boolean
 
     external private fun nativeShutdown(ownerTag: Long)
-    external private fun nativeBeginFrame(): Boolean
-    external private fun nativeEndFrame()
-    external private fun nativePresent()
-    external private fun nativeOnSurfaceCreated(surface: Surface)
-    external private fun nativeOnSurfaceChanged(width: Int, height: Int)
-    external private fun nativeOnSurfaceDestroyed()
-    external private fun nativeOnMemoryPressure(level: Int)
-    external private fun nativeOnThermalThrottling(temperatureRatio: Float)
-    external private fun nativeGetBackend(): Int
-    external private fun nativeIsInitialized(): Boolean
-    external private fun nativeWaitIdle()
+    external private fun nativeBeginFrame(ownerTag: Long): Boolean
+    external private fun nativeEndFrame(ownerTag: Long)
+    external private fun nativePresent(ownerTag: Long)
+    external private fun nativeOnSurfaceCreated(surface: Surface, ownerTag: Long)
+    external private fun nativeOnSurfaceChanged(width: Int, height: Int, ownerTag: Long)
+    external private fun nativeOnSurfaceDestroyed(ownerTag: Long)
+    external private fun nativeOnMemoryPressure(level: Int, ownerTag: Long)
+    external private fun nativeOnThermalThrottling(temperatureRatio: Float, ownerTag: Long)
+    external private fun nativeGetBackend(ownerTag: Long): Int
+    external private fun nativeIsInitialized(ownerTag: Long): Boolean
+    external private fun nativeWaitIdle(ownerTag: Long)
 
     // Frame stats
-    external private fun nativeGetFrameNumber(): Long
-    external private fun nativeGetFrameTimeMs(): Double
-    external private fun nativeGetCpuTimeMs(): Double
-    external private fun nativeGetGpuTimeMs(): Double
-    external private fun nativeGetDrawCalls(): Int
-    external private fun nativeGetGpuMemoryUsed(): Long
-    external private fun nativeGetCpuMemoryUsed(): Long
-    external private fun nativeResetFrameStats()
+    external private fun nativeGetFrameNumber(ownerTag: Long): Long
+    external private fun nativeGetFrameTimeMs(ownerTag: Long): Double
+    external private fun nativeGetCpuTimeMs(ownerTag: Long): Double
+    external private fun nativeGetGpuTimeMs(ownerTag: Long): Double
+    external private fun nativeGetDrawCalls(ownerTag: Long): Int
+    external private fun nativeGetGpuMemoryUsed(ownerTag: Long): Long
+    external private fun nativeGetCpuMemoryUsed(ownerTag: Long): Long
+    external private fun nativeResetFrameStats(ownerTag: Long)
 
     // GPU info
-    external private fun nativeGetGpuRendererString(): String
-    external private fun nativeGetGpuVendorString(): String
-    external private fun nativeGetGpuVersionString(): String
-    external private fun nativeGetGpuVendor(): Int
-    external private fun nativeGetGpuArchitecture(): Int
+    external private fun nativeGetGpuRendererString(ownerTag: Long): String
+    external private fun nativeGetGpuVendorString(ownerTag: Long): String
+    external private fun nativeGetGpuVersionString(ownerTag: Long): String
+    external private fun nativeGetGpuVendor(ownerTag: Long): Int
+    external private fun nativeGetGpuArchitecture(ownerTag: Long): Int
 
     // Feature queries
-    external private fun nativeSupportsFeature(feature: Int): Boolean
-    external private fun nativeIsExtensionSupported(extension: String): Boolean
+    external private fun nativeSupportsFeature(feature: Int, ownerTag: Long): Boolean
+    external private fun nativeIsExtensionSupported(extension: String, ownerTag: Long): Boolean
 
     // -----------------------------------------------------------------------
     // Manager system. nativeAreManagersReady is the honest check that the
     // backend finished wiring its managers; every accessor below degrades
     // safely when it returns false rather than pretending to have succeeded.
     // -----------------------------------------------------------------------
-    external private fun nativeAreManagersReady(): Boolean
+    external private fun nativeAreManagersReady(ownerTag: Long): Boolean
 
-    external private fun nativeCreateBuffer(size: Long, usage: Int): Long
-    external private fun nativeDestroyBuffer(handle: Long)
-    external private fun nativeUpdateBuffer(handle: Long, offset: Long, data: ByteArray): Boolean
+    external private fun nativeCreateBuffer(size: Long, usage: Int, ownerTag: Long): Long
+    external private fun nativeDestroyBuffer(handle: Long, ownerTag: Long)
+    external private fun nativeUpdateBuffer(handle: Long, offset: Long, data: ByteArray, ownerTag: Long): Boolean
 
-    external private fun nativeCreateTexture2D(
-        width: Int,
-        height: Int,
-        format: Int,
-        usage: Int,
-        mipLevels: Int
-    ): Long
-    external private fun nativeUploadTexture(
-        handle: Long,
-        mipLevel: Int,
-        data: ByteArray
-    ): Boolean
-    external private fun nativeDestroyTexture(handle: Long)
+    external private fun nativeCreateTexture2D(width: Int, height: Int, format: Int, usage: Int, mipLevels: Int, ownerTag: Long): Long
+    external private fun nativeUploadTexture(handle: Long, mipLevel: Int, data: ByteArray, ownerTag: Long): Boolean
+    external private fun nativeDestroyTexture(handle: Long, ownerTag: Long)
 
-    external private fun nativeCreateShader(stage: Int, source: String, defines: Array<String>): Long
-    external private fun nativeDestroyShader(handle: Long)
-    external private fun nativeCreateGraphicsPipeline(vertexShader: Long, fragmentShader: Long): Long
-    external private fun nativeDestroyPipeline(handle: Long)
+    external private fun nativeCreateShader(stage: Int, source: String, defines: Array<String>, ownerTag: Long): Long
+    external private fun nativeDestroyShader(handle: Long, ownerTag: Long)
+    external private fun nativeCreateGraphicsPipeline(vertexShader: Long, fragmentShader: Long, ownerTag: Long): Long
+    external private fun nativeDestroyPipeline(handle: Long, ownerTag: Long)
 
-    external private fun nativeBindPipeline(pipeline: Long)
-    external private fun nativeBindVertexBuffers(firstBinding: Int, buffers: LongArray, offsets: IntArray)
-    external private fun nativeBindIndexBuffer(buffer: Long, indexType: Int)
-    external private fun nativeSetViewport(x: Float, y: Float, width: Float, height: Float)
-    external private fun nativeSetScissor(x: Int, y: Int, width: Int, height: Int)
-    external private fun nativeBindFramebuffer(framebuffer: Long)
-    external private fun nativeDraw(
-        vertexCount: Int,
-        instanceCount: Int,
-        firstVertex: Int,
-        firstInstance: Int
-    )
-    external private fun nativeDrawIndexed(
-        indexCount: Int,
-        instanceCount: Int,
-        firstIndex: Int,
-        vertexOffset: Int,
-        firstInstance: Int
-    )
+    external private fun nativeBindPipeline(pipeline: Long, ownerTag: Long)
+    external private fun nativeBindVertexBuffers(firstBinding: Int, buffers: LongArray, offsets: IntArray, ownerTag: Long)
+    external private fun nativeBindIndexBuffer(buffer: Long, indexType: Int, ownerTag: Long)
+    external private fun nativeSetViewport(x: Float, y: Float, width: Float, height: Float, ownerTag: Long)
+    external private fun nativeSetScissor(x: Int, y: Int, width: Int, height: Int, ownerTag: Long)
+    external private fun nativeBindFramebuffer(framebuffer: Long, ownerTag: Long)
+    external private fun nativeDraw(vertexCount: Int, instanceCount: Int, firstVertex: Int, firstInstance: Int, ownerTag: Long)
+    external private fun nativeDrawIndexed(indexCount: Int, instanceCount: Int, firstIndex: Int, vertexOffset: Int, firstInstance: Int, ownerTag: Long)
 
     // -----------------------------------------------------------------------
     // Resource lifetime
     // -----------------------------------------------------------------------
 
     /** True once the backend has constructed every manager the draw path needs. */
-    fun areManagersReady(): Boolean = nativeAreManagersReady()
+    fun areManagersReady(): Boolean = nativeAreManagersReady(ownerTag)
 
     /** Resets the per-frame counters reported by [getFrameTimeMs] and friends. */
-    fun resetFrameStats() = nativeResetFrameStats()
+    fun resetFrameStats() = nativeResetFrameStats(ownerTag)
 
     /**
      * Opaque handle to a GPU resource. Zero means the resource could not be
@@ -700,17 +646,17 @@ open class CopperOxideRenderer(
      */
     fun createBuffer(sizeBytes: Long, usage: BufferUsage = BufferUsage.Vertex): ResourceHandle {
         require(sizeBytes > 0) { "sizeBytes must be positive, was $sizeBytes" }
-        return ResourceHandle(nativeCreateBuffer(sizeBytes, usage.code))
+        return ResourceHandle(nativeCreateBuffer(sizeBytes, usage.code, ownerTag))
     }
 
     fun destroyBuffer(buffer: ResourceHandle) {
-        if (buffer.isValid) nativeDestroyBuffer(buffer.value)
+        if (buffer.isValid) nativeDestroyBuffer(buffer.value, ownerTag)
     }
 
     /** Uploads [data] to [buffer] at [offset]. */
     fun updateBuffer(buffer: ResourceHandle, offset: Long, data: ByteArray): Boolean {
         if (!buffer.isValid || data.isEmpty()) return false
-        return nativeUpdateBuffer(buffer.value, offset, data)
+        return nativeUpdateBuffer(buffer.value, offset, data, ownerTag)
     }
 
     /** Creates a 2D texture. Returns an invalid handle when creation fails. */
@@ -722,17 +668,17 @@ open class CopperOxideRenderer(
         mipLevels: Int = 1
     ): ResourceHandle {
         require(width > 0 && height > 0) { "texture extent must be positive" }
-        return ResourceHandle(nativeCreateTexture2D(width, height, format.code, usage, mipLevels))
+        return ResourceHandle(nativeCreateTexture2D(width, height, format.code, usage, mipLevels, ownerTag))
     }
 
     /** Uploads tightly packed pixels to one mip level of [texture]. */
     fun uploadTexture(texture: ResourceHandle, mipLevel: Int, data: ByteArray): Boolean {
         if (!texture.isValid || data.isEmpty()) return false
-        return nativeUploadTexture(texture.value, mipLevel, data)
+        return nativeUploadTexture(texture.value, mipLevel, data, ownerTag)
     }
 
     fun destroyTexture(texture: ResourceHandle) {
-        if (texture.isValid) nativeDestroyTexture(texture.value)
+        if (texture.isValid) nativeDestroyTexture(texture.value, ownerTag)
     }
 
     /**
@@ -744,10 +690,10 @@ open class CopperOxideRenderer(
      * of pretending to have produced a module.
      */
     fun createShader(stage: ShaderStage, source: String, defines: Array<String> = emptyArray()): ResourceHandle =
-        ResourceHandle(nativeCreateShader(stage.code, source, defines))
+        ResourceHandle(nativeCreateShader(stage.code, source, defines, ownerTag))
 
     fun destroyShader(shader: ResourceHandle) {
-        if (shader.isValid) nativeDestroyShader(shader.value)
+        if (shader.isValid) nativeDestroyShader(shader.value, ownerTag)
     }
 
     /**
@@ -757,20 +703,20 @@ open class CopperOxideRenderer(
      * objects, it is a linked `GLuint` program. The caller API is the same.
      */
     fun createGraphicsPipeline(vertexShader: ResourceHandle, fragmentShader: ResourceHandle): ResourceHandle =
-        ResourceHandle(nativeCreateGraphicsPipeline(vertexShader.value, fragmentShader.value))
+        ResourceHandle(nativeCreateGraphicsPipeline(vertexShader.value, fragmentShader.value, ownerTag))
 
     fun destroyPipeline(pipeline: ResourceHandle) {
-        if (pipeline.isValid) nativeDestroyPipeline(pipeline.value)
+        if (pipeline.isValid) nativeDestroyPipeline(pipeline.value, ownerTag)
     }
 
     // -----------------------------------------------------------------------
     // Recording
     // -----------------------------------------------------------------------
 
-    fun bindPipeline(pipeline: ResourceHandle) = nativeBindPipeline(pipeline.value)
+    fun bindPipeline(pipeline: ResourceHandle) = nativeBindPipeline(pipeline.value, ownerTag)
 
     fun bindVertexBuffer(binding: Int, buffer: ResourceHandle, offset: Int = 0) =
-        nativeBindVertexBuffers(binding, longArrayOf(buffer.value), intArrayOf(offset))
+        nativeBindVertexBuffers(binding, longArrayOf(buffer.value), intArrayOf(offset), ownerTag)
 
     fun bindVertexBuffers(
         buffers: LongArray,
@@ -778,25 +724,25 @@ open class CopperOxideRenderer(
         firstBinding: Int = 0
     ) {
         require(buffers.size == offsets.size) { "buffers and offsets must be the same length" }
-        nativeBindVertexBuffers(firstBinding, buffers, offsets)
+        nativeBindVertexBuffers(firstBinding, buffers, offsets, ownerTag)
     }
 
     fun bindIndexBuffer(buffer: ResourceHandle, indexType: IndexType = IndexType.Uint16) =
-        nativeBindIndexBuffer(buffer.value, indexType.code)
+        nativeBindIndexBuffer(buffer.value, indexType.code, ownerTag)
 
     fun setViewport(x: Float, y: Float, width: Float, height: Float) =
-        nativeSetViewport(x, y, width, height)
+        nativeSetViewport(x, y, width, height, ownerTag)
 
-    fun setScissor(x: Int, y: Int, width: Int, height: Int) = nativeSetScissor(x, y, width, height)
+    fun setScissor(x: Int, y: Int, width: Int, height: Int) = nativeSetScissor(x, y, width, height, ownerTag)
 
-    fun bindFramebuffer(framebuffer: ResourceHandle) = nativeBindFramebuffer(framebuffer.value)
+    fun bindFramebuffer(framebuffer: ResourceHandle) = nativeBindFramebuffer(framebuffer.value, ownerTag)
 
     fun draw(
         vertexCount: Int,
         instanceCount: Int = 1,
         firstVertex: Int = 0,
         firstInstance: Int = 0
-    ) = nativeDraw(vertexCount, instanceCount, firstVertex, firstInstance)
+    ) = nativeDraw(vertexCount, instanceCount, firstVertex, firstInstance, ownerTag)
 
     fun drawIndexed(
         indexCount: Int,
@@ -804,7 +750,7 @@ open class CopperOxideRenderer(
         firstIndex: Int = 0,
         vertexOffset: Int = 0,
         firstInstance: Int = 0
-    ) = nativeDrawIndexed(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)
+    ) = nativeDrawIndexed(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance, ownerTag)
 }
 
 /**
