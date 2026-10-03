@@ -15,23 +15,30 @@
 #include <android/log.h>
 #include <shaderc/shaderc.hpp>
 
-// Real SPIR-V validation, when the SPIRV-Tools that shaderc vendors is visible.
-// __has_include rather than an unconditional include, so a build that resolves
-// shaderc without the validator headers still compiles - it just reports that
-// validation did not run instead of pretending it did.
-#if defined(__has_include)
-#if __has_include(<spirv-tools/libspirv.hpp>)
-#define COPPER_HAVE_SPIRV_TOOLS 1
+// Real SPIR-V validation via the SPIRV-Tools that shaderc vendors.
+//
+// WHY a CMake-provided define and not __has_include: shaderc links SPIRV-Tools
+// PRIVATE, so its headers are deliberately NOT on a consumer's include path.
+// CMakeLists adds them explicitly and sets this define, which makes the
+// decision visible and deterministic instead of depending on whatever a
+// transitive link happens to expose.
+#ifdef COPPER_HAVE_SPIRV_TOOLS
 #include <spirv-tools/libspirv.hpp>
-#endif
 #endif
 
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
+
+// Set by CMakeLists from the same value FetchContent pins. The fallback exists
+// only so this file still compiles if the define is ever dropped.
+#ifndef COPPER_SHADERC_TAG
+#define COPPER_SHADERC_TAG "unpinned"
+#endif
 
 #define LOG_TAG "CopperOxide-ShaderTx"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -52,8 +59,8 @@ constexpr uint32_t kSpirvMagic = 0x07230203u;
 // device: the renderer pins the Vulkan ABI to 1.0 for Android's libvulkan.so and
 // cannot assume 1.1 even though create_instance asks for it. Raising this is a
 // one-line change once the renderer reports the device's real apiVersion.
-constexpr shaderc_env_version kTargetEnv = shaderc_env_version_vulkan_1_0;
-constexpr shaderc_spv_version kTargetSpv = shaderc_spv_version_1_3;
+constexpr uint32_t kTargetEnvVersion = shaderc_env_version_vulkan_1_0;
+constexpr shaderc_spirv_version kTargetSpirv = shaderc_spirv_version_1_3;
 
 shaderc_shader_kind to_shaderc_kind(ShaderStage stage) {
     switch (stage) {
@@ -298,26 +305,39 @@ class ShadercTranslator : public ShaderTranslator {
 public:
     ShadercTranslator() = default;
 
-    ~ShadercTranslator() override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (compiler_ != nullptr) {
-            shaderc_compiler_release(compiler_);
-            compiler_ = nullptr;
-        }
-        if (options_ != nullptr) {
-            shaderc_compile_options_release(options_);
-            options_ = nullptr;
-        }
-    }
-
     ShadercTranslator(const ShadercTranslator&) = delete;
     ShadercTranslator& operator=(const ShadercTranslator&) = delete;
 
-    bool available() const override { return compiler_ != nullptr; }
+    bool available() const override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return compiler_ != nullptr && compiler_->IsValid();
+    }
+
+    void initialize() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (compiler_ != nullptr) {
+            return;
+        }
+        // Held by pointer rather than by value: shaderc::Compiler has a
+        // destructor and a move constructor but no copy operations, so a
+        // default-constructed-then-assigned member would be a lifetime bug
+        // waiting to happen.
+        compiler_ = std::make_unique<shaderc::Compiler>();
+        if (!compiler_->IsValid()) {
+            compiler_.reset();
+            LOGE("shaderc failed to initialise; the Vulkan backend cannot accept GLSL");
+            return;
+        }
+        LOGI("shaderc %s ready (Vulkan 1.0 semantics, SPIR-V 1.3)", COPPER_SHADERC_TAG);
+    }
 
     std::string toolchainId() const override {
+        // The tag is passed in by CMake from the same variable FetchContent
+        // pins, so this string cannot drift away from the version actually
+        // built. It is folded into the SPIR-V cache key, so bumping the tag
+        // invalidates every artifact the previous compiler produced.
         std::string id = "shaderc-";
-        id += std::to_string(shaderc_version());
+        id += COPPER_SHADERC_TAG;
         id += "-vk1.0-spv1.3";
 #ifdef COPPER_HAVE_SPIRV_TOOLS
         id += "+spirv-tools";
@@ -404,7 +424,6 @@ public:
         const std::string source =
             build_source_with_defines(preprocessed, request.defines, request.preamble);
 
-        size_t word_count = 0;
         std::string diagnostics;
         std::vector<uint32_t> spirv;
         {
@@ -416,33 +435,49 @@ public:
                 return result;
             }
 
-            shaderc_compilation_result_t compiled = shaderc_compile_into_spv(
-                options_, compiler_, source.c_str(), source.size(),
-                to_shaderc_kind(request.stage),
-                request.entry_point.empty() ? "main" : request.entry_point.c_str(), "main",
-                shaderc_compilation_stage_vertex, shaderc_compilation_stage_fragment,
-                shaderc_compilation_stage_compute, shaderc_compilation_stage_geometry,
-                shaderc_compilation_stage_tesscontrol, shaderc_compilation_stage_tesseval, 0,
-                nullptr);
+            // Options are built per compile rather than cached in a member:
+            // shaderc::CompileOptions owns a raw handle with no copy
+            // protection, so holding one across calls invites a double free.
+            // Building it costs one small allocation next to an actual compile.
+            shaderc::CompileOptions options;
+            options.SetSourceLanguage(shaderc_source_language_glsl);
+            options.SetTargetEnvironment(shaderc_target_env_vulkan, kTargetEnvVersion);
+            options.SetTargetSpirv(kTargetSpirv);
+            // WHY on: plain GLSL carries no descriptor bindings and Vulkan
+            // requires one per resource. Without this, a Minecraft-style shader
+            // declaring `uniform sampler2D tex` compiles and then fails at
+            // pipeline creation with nothing to point at.
+            options.SetAutoBindUniforms(true);
+            // WHY off: Copper Oxide bakes vertex attribute locations 0 and 1
+            // into its pipeline. Auto-assignment would hand out whatever
+            // location glslang chose and silently mismatch the vertex layout,
+            // which is worse than a link error asking the author for the
+            // qualifier.
+            options.SetAutoMapLocations(false);
+            // No optimisation pass: the driver optimises at pipeline creation,
+            // and running one on the device costs startup time for nothing.
+            options.SetOptimizationLevel(shaderc_optimization_level_zero);
 
-            if (compiled == nullptr) {
-                result.error = "the shader compiler returned no result";
-                return result;
-            }
-            if (shaderc_result_get_compilation_status(compiled) !=
-                shaderc_compilation_success) {
-                const char* errors = shaderc_result_get_error_message(compiled);
-                diagnostics = errors != nullptr ? errors : "unknown compiler failure";
+            const std::string file_name =
+                request.debug_name.empty() ? std::string("shader") : request.debug_name;
+            const shaderc::SpvCompilationResult compiled = compiler_->CompileGlslToSpv(
+                source, to_shaderc_kind(request.stage), file_name.c_str(),
+                request.entry_point.empty() ? "main" : request.entry_point.c_str(), options);
+
+            if (compiled.GetCompilationStatus() != shaderc_compilation_success) {
+                diagnostics = compiled.GetErrorMessage();
+                if (diagnostics.empty()) {
+                    diagnostics = "the compiler rejected the shader without saying why";
+                }
             } else {
-                const char* bytes = shaderc_result_get_bytes(compiled, &word_count);
-                if (bytes == nullptr || word_count == 0) {
+                const uint32_t* const begin = compiled.cbegin();
+                const uint32_t* const end = compiled.cend();
+                if (begin == nullptr || end == nullptr || end <= begin) {
                     diagnostics = "the compiler reported success but produced no SPIR-V";
                 } else {
-                    spirv.resize(word_count);
-                    std::memcpy(spirv.data(), bytes, word_count * sizeof(uint32_t));
+                    spirv.assign(begin, end);
                 }
             }
-            shaderc_result_release(compiled);
         }
 
         if (!diagnostics.empty()) {
@@ -518,9 +553,10 @@ public:
     }
 
 private:
+    // Guards compiler_: shaderc does not document its compiler as reentrant,
+    // and a compile can be reached from any thread that owns a renderer.
     std::mutex mutex_;
-    shaderc_compiler_t compiler_ = nullptr;
-    shaderc_compile_options_t options_ = nullptr;
+    std::unique_ptr<shaderc::Compiler> compiler_;
 };
 
 } // namespace
