@@ -387,17 +387,23 @@ jobs:
             # here instead.
             adb logcat -d -v brief | grep -E 'CopperOxide|AndroidRuntime|libEGL|libGLES|libvulkan|vulkan|Vulkan|swiftshader|gfxstream|EGL_|GL_' | tee instrumented-logcat.txt || true
             # `am instrument` reports failures in its output but still exits 0, so
-            # a green job meant nothing. Fail on the two markers that actually
-            # distinguish a run: JUnit prints FAILURES!!! or "OK (n tests)".
+            # a green job has always meant nothing. The checks below are the
+            # markers JUnit actually prints, and they are deliberately plain
+            # greps: this runs under /bin/sh, and the `if !` form plus a regex
+            # containing escaped parentheses was enough to break it.
+            echo "--- test result summary ---"
+            grep 'Tests run:' instrumented-tests.log || true
+            grep 'OK (' instrumented-tests.log || true
             if grep -q 'FAILURES!!!' instrumented-tests.log; then
               echo "::error::instrumented tests reported failures"
               exit 1
             fi
-            if ! grep -qE '^OK \([0-9]+ tests?\)' instrumented-tests.log; then
+            if ! grep -q 'OK (' instrumented-tests.log; then
               echo "::error::instrumented tests did not report a successful run"
               exit 1
             fi
-            grep -E 'Tests run:|OK \(' instrumented-tests.log || true
+            echo "instrumented tests reported success"
+
 
       - name: Upload renderer logcat
         if: always()
