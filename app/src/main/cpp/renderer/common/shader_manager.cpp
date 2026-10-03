@@ -136,7 +136,7 @@ bool ShaderManager::translateGlslToSpirv(ShaderStage stage, const std::string& g
     // building it twice invites a mismatch that would silently never hit.
     const std::string cache_key =
         ShaderCache::buildKey(stage, glsl_source, defines, kShaderCacheTargetApi,
-                              toolchain_version(translator));
+                              toolchainVersion(translator));
 
     {
         // A cached hit is the common case once a shader has been seen once, and
@@ -175,18 +175,6 @@ bool ShaderManager::translateGlslToSpirv(ShaderStage stage, const std::string& g
     // shader that compiled correctly. The next process pays for the miss.
     spirvCache().store(cache_key, stage, *spirv_out);
     return true;
-}
-
-uint32_t ShaderManager::toolchain_version(ShaderTranslator* translator) {
-    // FNV-1a over the compiler identity, truncated to 32 bits. Stable across
-    // processes and platforms, unlike std::hash.
-    const std::string id = translator != nullptr ? translator->toolchainId() : std::string("none");
-    uint32_t hash = 2166136261u;
-    for (const char character : id) {
-        hash ^= static_cast<uint8_t>(character);
-        hash *= 16777619u;
-    }
-    return hash == 0 ? 1u : hash;
 }
 
 uint64_t ShaderManager::createShaderFromGLSL(ShaderStage stage, const std::string& glsl_source,

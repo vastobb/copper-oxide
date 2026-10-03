@@ -157,6 +157,14 @@ struct TranslationStats {
 };
 TranslationStats translationStats();
 
+/// A stable 32-bit digest of a translator's identity, folded into the cache key
+/// so an artifact built by one compiler is never reused by another.
+///
+/// FNV-1a over the compiler's id string rather than std::hash, which is
+/// implementation-defined and would make the key depend on which standard
+/// library the device ships. Zero is mapped to 1 so the digest is never empty.
+uint32_t toolchainVersion(ShaderTranslator* translator);
+
 /// Updates the process-wide counters. `cache_hit` short-circuits the other
 /// arguments, so a hit cannot also be counted as a compilation.
 void recordTranslation(bool success, uint64_t compile_ms, bool cache_hit,

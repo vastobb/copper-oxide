@@ -154,10 +154,6 @@ protected:
                                       const std::vector<std::string>& defines,
                                       std::vector<uint32_t>* spirv_out, std::string* error_out);
 
-    /// A stable 32-bit digest of a translator's identity, folded into the cache
-    /// key so an artifact built by one compiler is never reused by another.
-    static uint32_t toolchain_version(ShaderTranslator* translator);
-
     virtual bool onCreateShader(uint64_t handle, ShaderStage stage, const std::vector<uint32_t>& spirv, const std::string& entry_point) = 0;
     virtual bool onCreateShaderFromGLSL(uint64_t handle, ShaderStage stage, const std::string& glsl_source, const std::string& entry_point, const std::vector<std::string>& defines) = 0;
     virtual void onDestroyShader(uint64_t handle) = 0;

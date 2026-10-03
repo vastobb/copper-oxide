@@ -87,6 +87,16 @@ ShaderCache& spirvCache() {
     return *cache;
 }
 
+uint32_t toolchainVersion(ShaderTranslator* translator) {
+    const std::string id = translator != nullptr ? translator->toolchainId() : std::string("none");
+    uint32_t hash = 2166136261u;
+    for (const char character : id) {
+        hash ^= static_cast<uint8_t>(character);
+        hash *= 16777619u;
+    }
+    return hash == 0 ? 1u : hash;
+}
+
 TranslationStats translationStats() {
     std::lock_guard<std::mutex> lock(g_translation_stats_mutex);
     return g_translation_stats;

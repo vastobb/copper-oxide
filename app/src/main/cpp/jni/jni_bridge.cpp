@@ -1051,7 +1051,7 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCompileToSpirv(
         // that, calling this and then creating a shader would compile twice.
         const std::string cache_key =
             ShaderCache::buildKey(request.stage, request.source, request.defines, "vulkan",
-                                  ShaderManager::toolchain_version(translator));
+                                  toolchainVersion(translator));
         std::vector<uint32_t> cached;
         if (spirvCache().lookup(cache_key, &cached)) {
             recordTranslation(true, 0, true, false);
