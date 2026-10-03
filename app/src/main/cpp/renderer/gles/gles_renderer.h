@@ -45,18 +45,9 @@ public:
     bool initialize(const RendererConfig& config) override;
     void shutdown() override;
 
-
     const RendererConfig& getConfig() const override { return config_; }
     RendererBackend getBackend() const override { return RendererBackend::OpenGLES; }
     bool isInitialized() const override { return initialized_; }
-
-    uint64_t getFrameNumber() const override { return frame_stats_.frame_number; }
-    double getFrameTimeMs() const override { return frame_stats_.frame_time_ms; }
-    double getCpuTimeMs() const override { return frame_stats_.cpu_time_ms; }
-    double getGpuTimeMs() const override { return frame_stats_.gpu_time_ms; }
-    uint32_t getDrawCalls() const override { return frame_stats_.draw_calls; }
-    uint64_t getGpuMemoryUsed() const override { return frame_stats_.gpu_memory_used; }
-    uint64_t getCpuMemoryUsed() const override { return frame_stats_.cpu_memory_used; }
 
     std::string getGpuRendererString() const override { return gpu_info_.renderer_string; }
     std::string getGpuVendorString() const override { return gpu_info_.vendor_string; }
@@ -140,7 +131,6 @@ private:
     RendererConfig config_;
     GPUInfo gpu_info_;
     RendererLimits limits_;
-    FrameStats frame_stats_;
     RendererFeature supported_features_ = RendererFeature::None;
     bool initialized_ = false;
     bool surface_created_ = false;

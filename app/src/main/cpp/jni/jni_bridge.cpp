@@ -387,11 +387,7 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeGetFrameNumber(
     JNIEnv* env, jobject thiz, jlong owner
 ) {
     RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
-    const uint64_t frame_number = renderer ? renderer->getFrameNumber() : 0;
-    LOGI("nativeGetFrameNumber(owner=%lld) -> renderer=%p frame=%llu",
-         static_cast<long long>(owner), static_cast<const void*>(renderer),
-         static_cast<unsigned long long>(frame_number));
-    return frame_number;
+    return renderer ? renderer->getFrameNumber() : 0;
 }
 
 extern "C" JNIEXPORT jdouble JNICALL
