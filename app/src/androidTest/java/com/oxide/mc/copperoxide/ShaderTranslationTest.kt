@@ -559,14 +559,19 @@ class ShaderTranslationTest {
         """.trimIndent()
 
         /**
-         * Only referenced inside a conditional, so this compiles with or without
-         * the define. Which makes the generated SPIR-V the only evidence that the
-         * define was applied.
+         * The scale is chosen by the macro's value, so this compiles with or
+         * without the define and with either value - which makes the generated
+         * SPIR-V the only evidence that the define was applied.
          */
         val BRANCHING = """
             #version 450
 
-            #ifdef COPPER_TEST_BRANCH
+            // #if on the macro's VALUE, not #ifdef. A macro that is defined as
+            // 0 still satisfies #ifdef, so the two branches above would have been
+            // identical whatever value was passed and this test could never have
+            // distinguished them. An undefined macro reads as 0 here, which is
+            // what makes the no-define case meaningful too.
+            #if COPPER_TEST_BRANCH > 0
             const float COPPER_SCALE = 2.0;
             #else
             const float COPPER_SCALE = 1.0;

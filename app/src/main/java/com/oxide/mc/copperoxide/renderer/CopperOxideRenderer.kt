@@ -561,14 +561,16 @@ open class CopperOxideRenderer(
     fun lastShaderError(): String = nativeLastShaderError(ownerTag)
 
     /**
-     * Compilation and cache counters.
+     * Compilation and cache counters, for the whole process.
      *
      * `compiled` counts full GLSL to SPIR-V compilations and `memoryHits` counts
      * shaders served from the cache. Comparing them is how a caller tells a
-     * working cache from an absent one.
+     * working cache from an absent one — and the counters are readable whether or
+     * not this renderer is initialized, because the cache is process-wide and a
+     * shader may have been compiled through [compileToSpirv] alone.
      */
     fun shaderCompileStats(): ShaderCompileStats {
-        val values = nativeShaderCompileStats(ownerTag)
+        val values = nativeShaderCompileStats()
         return ShaderCompileStats(
             compiled = values[0],
             memoryHits = values[1],
@@ -578,8 +580,11 @@ open class CopperOxideRenderer(
         )
     }
 
-    /** Opens the on-disk SPIR-V cache under [directory]. */
-    fun openShaderCache(directory: String) = nativeOpenShaderCache(ownerTag, directory)
+    /**
+     * Opens the on-disk SPIR-V cache under [directory]. Process-wide, and usable
+     * before a renderer exists.
+     */
+    fun openShaderCache(directory: String) = nativeOpenShaderCache(directory)
 
     /**
      * Points `#include` resolution at a directory on disk, typically a game
@@ -656,9 +661,9 @@ open class CopperOxideRenderer(
 
     external private fun nativeLastShaderError(ownerTag: Long): String
 
-    external private fun nativeShaderCompileStats(ownerTag: Long): LongArray
+    external private fun nativeShaderCompileStats(): LongArray
 
-    external private fun nativeOpenShaderCache(ownerTag: Long, directory: String)
+    external private fun nativeOpenShaderCache(directory: String)
 
     external private fun nativeSetShaderIncludeRoot(root: String)
 

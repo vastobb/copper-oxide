@@ -870,19 +870,20 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeLastShaderError
 
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeShaderCompileStats(
-    JNIEnv* env, jobject thiz, jlong owner
+    JNIEnv* env, jobject thiz
 ) {
-    jlong values[5] = {0, 0, 0, 0, 0};
-    if (RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner))) {
-        if (ShaderManager* shaders = renderer->getShaderManager()) {
-            const ShaderManager::ShaderCompileStats stats = shaders->shaderCompileStats();
-            values[0] = static_cast<jlong>(stats.compiled);
-            values[1] = static_cast<jlong>(stats.memory_hits);
-            values[2] = static_cast<jlong>(stats.disk_hits);
-            values[3] = static_cast<jlong>(stats.failures);
-            values[4] = static_cast<jlong>(stats.total_ms);
-        }
-    }
+    // Process-wide, and deliberately not routed through the renderer any more.
+    // The counters describe one cache shared by the whole process, so asking a
+    // renderer for them made them unreadable whenever the compile happened
+    // somewhere without one - which is exactly the compileToSpirv path.
+    const TranslationStats stats = translationStats();
+    const jlong values[5] = {
+        static_cast<jlong>(stats.compiled),
+        static_cast<jlong>(stats.memory_hits),
+        static_cast<jlong>(stats.disk_hits),
+        static_cast<jlong>(stats.failures),
+        static_cast<jlong>(stats.total_ms),
+    };
     jlongArray result = env->NewLongArray(5);
     if (result != nullptr) {
         env->SetLongArrayRegion(result, 0, 5, values);
@@ -892,19 +893,17 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeShaderCompileSt
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOpenShaderCache(
-    JNIEnv* env, jobject thiz, jlong owner, jstring directory
+    JNIEnv* env, jobject thiz, jstring directory
 ) {
-    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
-    if (renderer == nullptr || directory == nullptr) {
+    if (directory == nullptr) {
         return;
     }
-    if (ShaderManager* shaders = renderer->getShaderManager()) {
-        const char* path = env->GetStringUTFChars(directory, nullptr);
-        if (path != nullptr) {
-            shaders->openShaderCache(path);
-            env->ReleaseStringUTFChars(directory, path);
-        }
+    const char* path = env->GetStringUTFChars(directory, nullptr);
+    if (path == nullptr) {
+        return;
     }
+    spirvCache().open(path);
+    env->ReleaseStringUTFChars(directory, path);
 }
 
 

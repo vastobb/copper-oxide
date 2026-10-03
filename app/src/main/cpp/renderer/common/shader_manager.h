@@ -110,10 +110,6 @@ public:
      */
     virtual void compileAsync(const std::string& key, ShaderStage stage, const std::string& source, std::function<void(uint64_t)> callback);
 
-    /// Enables the on-disk half of the SPIR-V cache. Call before the first
-    /// shader is compiled. Safe to call more than once.
-    void openShaderCache(const std::string& directory);
-
     /// Why the most recent shader compilation failed, or an empty string when it
     /// succeeded.
     ///
@@ -122,17 +118,6 @@ public:
     /// compiler is linked into this build" from "the backend refused the module".
     /// This is what a caller logs or shows a user.
     const std::string& lastShaderError() const;
-
-    /// Compilation and cache counters, for telemetry and for the tests that
-    /// prove the cache works.
-    struct ShaderCompileStats {
-        uint64_t compiled = 0;     ///< full GLSL -> SPIR-V compilations run
-        uint64_t memory_hits = 0;  ///< served from the in-memory cache
-        uint64_t disk_hits = 0;    ///< served from the on-disk cache
-        uint64_t failures = 0;     ///< compiler or validation failures
-        uint64_t total_ms = 0;     ///< summed compile time
-    };
-    ShaderCompileStats shaderCompileStats() const;
 
 protected:
     /**
