@@ -14,6 +14,8 @@
 #include <android/native_window_jni.h>
 #include <android/log.h>
 #include <array>
+#include <unordered_map>
+#include <vector>
 #include <mutex>
 #include <string>
 #include <memory>
@@ -27,16 +29,18 @@
 namespace copper {
 
 static std::mutex g_renderer_mutex;
-static std::unique_ptr<RendererBase> g_renderer;
-// Which CopperOxideRenderer instance owns g_renderer.
+// One renderer per CopperOxideRenderer instance, keyed by its owner tag.
 //
-// There is one process-global renderer slot, but there can be more than one
-// CopperOxideRenderer object in a process - the activity and an instrumentation
-// test both create one. Without ownership, the second initialize() replaced the
-// first instance's renderer and the first instance's shutdown() destroyed it out
-// from under its own running render loop, which is how frame statistics came
-// back as all zeroes while the native side was visibly rendering.
-static uint64_t g_renderer_owner = 0;
+// This started as a single process-global slot. More than one
+// CopperOxideRenderer can exist in a process - the activity creates one, and an
+// instrumentation test running against that app creates another - and with a
+// single slot the second initialize() displaced the first instance's renderer
+// mid-frame. The first instance's render loop then kept running against a
+// renderer it no longer owned and reported the other's statistics: frameNumber
+// 0 with a frame time of 0.0 ms, while the native trace showed frames 1 to 63
+// completing normally. A registry removes the interference instead of trying to
+// police it: each instance owns its renderer and nothing else can reach it.
+static std::unordered_map<uint64_t, std::unique_ptr<RendererBase>> g_renderers;
 static JavaVM* g_jvm = nullptr;
 
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
@@ -46,13 +50,17 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
 }
 
 extern "C" JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
-    std::unique_ptr<RendererBase> renderer;
+    std::vector<std::unique_ptr<RendererBase>> renderers;
     {
         std::lock_guard<std::mutex> lock(g_renderer_mutex);
-        renderer = std::move(g_renderer);
-        g_renderer_owner = 0;
+        renderers.reserve(g_renderers.size());
+        for (auto& entry : g_renderers) {
+            renderers.push_back(std::move(entry.second));
+        }
+        g_renderers.clear();
     }
-    if (renderer) {
+    // Outside the lock: shutdown() blocks on fences and the device queue.
+    for (auto& renderer : renderers) {
         renderer->shutdown();
     }
     g_jvm = nullptr;
@@ -70,19 +78,20 @@ JNIEnv* getJNIEnv() {
 }
 
 void setRenderer(std::unique_ptr<RendererBase> renderer, uint64_t owner) {
-    std::unique_ptr<RendererBase> displaced;
+    std::unique_ptr<RendererBase> replaced;
     {
         std::lock_guard<std::mutex> lock(g_renderer_mutex);
-        // Replacing the slot must not leak or leave a previous owner's renderer
-        // alive with nothing pointing at it, so the old one is taken out here
-        // and shut down outside the lock.
-        displaced = std::move(g_renderer);
-        g_renderer = std::move(renderer);
-        g_renderer_owner = owner;
+        auto it = g_renderers.find(owner);
+        if (it != g_renderers.end()) {
+            // Re-initializing the same instance: the old renderer must be shut
+            // down rather than dropped, or its device and context leak.
+            replaced = std::move(it->second);
+            g_renderers.erase(it);
+        }
+        g_renderers.emplace(owner, std::move(renderer));
     }
-    if (displaced) {
-        LOGE("a renderer was already installed; shutting the previous one down");
-        displaced->shutdown();
+    if (replaced) {
+        replaced->shutdown();
     }
 }
 
@@ -96,30 +105,20 @@ constexpr uint32_t kMaxVertexBindings = 16;
 // Holds the renderer alive for the duration of one JNI call. Shutdown() can
 // otherwise destroy the renderer between the lookup and the caller's first use,
 // which is a use-after-free.
-// Returns the renderer only when `owner` is the instance that installed it.
-//
-// A displaced instance's render loop keeps running - the native shutdown it did
-// not ask for does not stop its Kotlin loop - and it used to read whatever
-// renderer was in the global slot, so it reported the NEW owner's frame
-// statistics. Ownership has to be checked at every entry point that touches the
-// renderer, not only at initialize and shutdown.
+// Returns the renderer this instance installed, or null once it has been shut
+// down or was never initialized.
 RendererBase* renderer_for_owner(uint64_t owner) {
     std::lock_guard<std::mutex> lock(g_renderer_mutex);
-    if (g_renderer == nullptr || g_renderer_owner != owner) {
-        return nullptr;
-    }
-    return g_renderer.get();
+    const auto it = g_renderers.find(owner);
+    return it == g_renderers.end() ? nullptr : it->second.get();
 }
 
 class RendererGuard {
 public:
-    explicit RendererGuard(uint64_t owner = 0) {
+    explicit RendererGuard(uint64_t owner) {
         g_renderer_mutex.lock();
-        // owner 0 means "any owner", which is only correct for calls that cannot
-        // reach a renderer belonging to another instance in practice.
-        if (owner == 0 || (g_renderer != nullptr && g_renderer_owner == owner)) {
-            renderer_ = g_renderer.get();
-        }
+        const auto it = g_renderers.find(owner);
+        renderer_ = it == g_renderers.end() ? nullptr : it->second.get();
     }
     ~RendererGuard() { g_renderer_mutex.unlock(); }
 
@@ -259,17 +258,14 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeShutdown(
     std::unique_ptr<RendererBase> renderer;
     {
         std::lock_guard<std::mutex> lock(g_renderer_mutex);
-        // Only the instance that installed the renderer may tear it down.
-        // Another CopperOxideRenderer in the same process - the activity, or an
-        // instrumentation test - owns it now, and destroying it here would pull
-        // the device and the surface out from under that owner's render thread.
-        if (g_renderer_owner != static_cast<uint64_t>(owner)) {
-            LOGW("nativeShutdown from owner %lld, but owner %llu holds the renderer; ignoring",
-                 static_cast<long long>(owner), static_cast<unsigned long long>(g_renderer_owner));
+        const auto it = g_renderers.find(static_cast<uint64_t>(owner));
+        if (it == g_renderers.end()) {
+            LOGW("nativeShutdown: no renderer is registered for owner %lld; ignoring",
+                 static_cast<long long>(owner));
             return;
         }
-        renderer = std::move(g_renderer);
-        g_renderer_owner = 0;
+        renderer = std::move(it->second);
+        g_renderers.erase(it);
     }
     if (renderer) {
         // Dropping the unique_ptr without calling shutdown() would destroy the
