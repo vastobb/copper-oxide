@@ -243,4 +243,167 @@ const std::string& ShaderManager::lastShaderError() const {
     return pImpl->last_error;
 }
 
+
+void ShaderManager::destroyShader(uint64_t handle) {
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    // Destroying a shader that a live pipeline references leaves the pipeline
+    // holding a dangling VkShaderModule.
+    for (const auto& entry : pImpl->pipelines) {
+        const Impl::Pipeline& pipeline = entry.second;
+        if (pipeline.vertex_shader == handle || pipeline.fragment_shader == handle ||
+            pipeline.compute_shader == handle) {
+            return;
+        }
+    }
+    auto it = pImpl->shaders.find(handle);
+    if (it == pImpl->shaders.end()) {
+        return;
+    }
+
+    onDestroyShader(handle);
+
+    for (auto cache_it = pImpl->shader_cache.begin(); cache_it != pImpl->shader_cache.end(); ++cache_it) {
+        if (cache_it->second == handle) {
+            pImpl->shader_cache.erase(cache_it);
+            break;
+        }
+    }
+
+    pImpl->shaders.erase(it);
+}
+
+uint64_t ShaderManager::createGraphicsPipeline(uint64_t vertex_shader, uint64_t fragment_shader, const PipelineLayoutDesc& layout) {
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    // A dangling shader handle would be handed straight to the driver.
+    if (vertex_shader == 0 || fragment_shader == 0 ||
+        pImpl->shaders.find(vertex_shader) == pImpl->shaders.end() ||
+        pImpl->shaders.find(fragment_shader) == pImpl->shaders.end()) {
+        return 0;
+    }
+    uint64_t handle = pImpl->next_pipeline_handle++;
+
+    Impl::Pipeline pipeline;
+    pipeline.handle = handle;
+    pipeline.vertex_shader = vertex_shader;
+    pipeline.fragment_shader = fragment_shader;
+    pipeline.stages = {ShaderStage::Vertex, ShaderStage::Fragment};
+
+    if (!onCreateGraphicsPipeline(handle, vertex_shader, fragment_shader, layout)) {
+        return 0;
+    }
+
+    pImpl->pipelines[handle] = std::move(pipeline);
+    return handle;
+}
+
+uint64_t ShaderManager::createComputePipeline(uint64_t compute_shader, const PipelineLayoutDesc& layout) {
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    if (compute_shader == 0 || pImpl->shaders.find(compute_shader) == pImpl->shaders.end()) {
+        return 0;
+    }
+    uint64_t handle = pImpl->next_pipeline_handle++;
+
+    Impl::Pipeline pipeline;
+    pipeline.handle = handle;
+    pipeline.compute_shader = compute_shader;
+    pipeline.stages = {ShaderStage::Compute};
+
+    if (!onCreateComputePipeline(handle, compute_shader, layout)) {
+        return 0;
+    }
+
+    pImpl->pipelines[handle] = std::move(pipeline);
+    return handle;
+}
+
+void ShaderManager::destroyPipeline(uint64_t handle) {
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    auto it = pImpl->pipelines.find(handle);
+    if (it == pImpl->pipelines.end()) {
+        return;
+    }
+
+    onDestroyPipeline(handle);
+
+    for (auto cache_it = pImpl->pipeline_cache.begin(); cache_it != pImpl->pipeline_cache.end(); ++cache_it) {
+        if (cache_it->second == handle) {
+            pImpl->pipeline_cache.erase(cache_it);
+            break;
+        }
+    }
+
+    pImpl->pipelines.erase(it);
+}
+
+uint64_t ShaderManager::getOrCreateShader(const std::string& key, std::function<uint64_t()> creator) {
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        auto it = pImpl->shader_cache.find(key);
+        if (it != pImpl->shader_cache.end()) {
+            return it->second;
+        }
+    }
+    // creator() locks internally; calling it under the lock self-deadlocks.
+    const uint64_t handle = creator();
+    if (handle != 0) {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        pImpl->shader_cache.emplace(key, handle);
+    }
+    return handle;
+}
+
+uint64_t ShaderManager::getOrCreatePipeline(const std::string& key, std::function<uint64_t()> creator) {
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        auto it = pImpl->pipeline_cache.find(key);
+        if (it != pImpl->pipeline_cache.end()) {
+            return it->second;
+        }
+    }
+    const uint64_t handle = creator();
+    if (handle != 0) {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        pImpl->pipeline_cache.emplace(key, handle);
+    }
+    return handle;
+}
+
+void ShaderManager::setShaderDebugName(uint64_t handle, const std::string& name) {
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    auto it = pImpl->shaders.find(handle);
+    if (it != pImpl->shaders.end()) {
+        it->second.debug_name = name;
+        onSetShaderDebugName(handle, name);
+    }
+}
+
+void ShaderManager::setPipelineDebugName(uint64_t handle, const std::string& name) {
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    auto it = pImpl->pipelines.find(handle);
+    if (it != pImpl->pipelines.end()) {
+        it->second.debug_name = name;
+        onSetPipelineDebugName(handle, name);
+    }
+}
+
+void ShaderManager::addSpecializationConstant(uint64_t shader_handle, const std::string& name, uint32_t value) {
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    auto it = pImpl->shaders.find(shader_handle);
+    if (it != pImpl->shaders.end()) {
+        it->second.specialization_constants[name] = value;
+        onAddSpecializationConstant(shader_handle, name, value);
+    }
+}
+
+void ShaderManager::compileAsync(const std::string& key, ShaderStage stage, const std::string& source, std::function<void(uint64_t)> callback) {
+    // Runs inline. Deliberate: compilation reaches into this manager's handle
+    // space and its cache, so it has to happen where those are valid. The cache
+    // is what keeps the repeat case cheap.
+    const uint64_t handle = getOrCreateShader(
+        key, [this, stage, &source]() { return createShaderFromGLSL(stage, source, "main", {}); });
+    if (callback) {
+        callback(handle);
+    }
+}
+
 } // namespace copper
