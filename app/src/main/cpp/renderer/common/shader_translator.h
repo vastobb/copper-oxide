@@ -22,6 +22,8 @@
 
 namespace copper {
 
+class ShaderCache;
+
 /// Resolves an `#include` to the text it names.
 ///
 /// WHY this exists rather than relying on the compiler: a GLSL front end reads
@@ -130,6 +132,35 @@ ShaderTranslator* shaderTranslator();
 /// Test seam: replaces the process translator. nullptr restores nothing - the
 /// default is created once and cannot be replaced twice. Only for tests.
 void setShaderTranslatorForTesting(ShaderTranslator* translator);
+
+/// The process-wide compiled-SPIR-V cache.
+///
+/// WHY process-wide rather than one per ShaderManager: the key is a content
+/// hash, so two managers asking for the same shader want the same artifact, and
+/// one copy is both cheaper and the only way a cache hit can happen at all
+/// across renderers. It also means a caller that pre-warms the cache through
+/// compileToSpirv() and then creates a shader pays for one compilation.
+ShaderCache& spirvCache();
+
+/// Compilation and cache counters, process-wide for the same reason.
+///
+/// Counters rather than a status flag: the difference between "no shader was
+/// ever compiled" and "the same one was compiled once and then served from the
+/// cache" is the difference between a broken build and a working one, and it is
+/// invisible in the output.
+struct TranslationStats {
+    uint64_t compiled = 0;     ///< full GLSL -> SPIR-V compilations run
+    uint64_t memory_hits = 0;  ///< served from the in-memory cache
+    uint64_t disk_hits = 0;    ///< served from the on-disk cache
+    uint64_t failures = 0;     ///< compiler or validation failures
+    uint64_t total_ms = 0;     ///< summed compile time
+};
+TranslationStats translationStats();
+
+/// Updates the process-wide counters. `cache_hit` short-circuits the other
+/// arguments, so a hit cannot also be counted as a compilation.
+void recordTranslation(bool success, uint64_t compile_ms, bool cache_hit,
+                       bool disk_hit);
 
 /// Name used in diagnostics and cache keys.
 const char* shaderStageName(ShaderStage stage);

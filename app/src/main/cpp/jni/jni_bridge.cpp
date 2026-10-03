@@ -6,6 +6,7 @@
 #include "buffer_manager.h"
 #include "texture_manager.h"
 #include "shader_manager.h"
+#include "shader_cache.h"
 #include "shader_translator.h"
 #include "state_manager.h"
 #include "command_buffer.h"
@@ -975,6 +976,169 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeSetShaderInclud
             return resolve_include_from_root(root_path, name, text);
         });
 }
+// -----------------------------------------------------------------------------
+// Translating GLSL to SPIR-V without a renderer.
+//
+// The GLSL -> SPIR-V -> validate path needs no GPU, no device and no context, so
+// exposing it on its own is what lets it be tested anywhere. A Vulkan device is
+// genuinely unavailable on the CI emulator - its guest graphics API is OpenGL ES
+// 3.0 via SwiftShader - so a test that insists on one skips, and a test that
+// only ever runs against a device proves nothing in CI.
+//
+// This is a real API, not a test hook: pre-warming the SPIR-V cache during a
+// loading screen is a legitimate use, and checking a precompiled .spv is too.
+// -----------------------------------------------------------------------------
 
+// Diagnostics from the most recent compileToSpirv call.
+//
+// Guarded by a token, not a plain global read, because the SPIR-V words and the
+// error message are returned by two separate calls. Without the token a second
+// compile on another thread could overwrite the error in between, and the
+// caller would be handed a message about a different shader.
+namespace {
+
+std::mutex g_translation_mutex;
+uint64_t g_translation_token = 0;
+std::string g_translation_error;
+
+} // namespace
+
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeCompileToSpirv(
+    JNIEnv* env, jobject thiz, jint stage_code, jstring source, jobjectArray defines
+) {
+    TranslationRequest request;
+    switch (stage_code) {
+        case 1: request.stage = ShaderStage::Fragment; break;
+        case 2: request.stage = ShaderStage::Compute; break;
+        case 3: request.stage = ShaderStage::Geometry; break;
+        default: request.stage = ShaderStage::Vertex; break;
+    }
+
+    if (source != nullptr) {
+        const char* text = env->GetStringUTFChars(source, nullptr);
+        if (text != nullptr) {
+            request.source = text;
+            env->ReleaseStringUTFChars(source, text);
+        }
+    }
+    if (defines != nullptr) {
+        const jsize count = env->GetArrayLength(defines);
+        request.defines.reserve(static_cast<size_t>(count));
+        for (jsize i = 0; i < count; ++i) {
+            auto element = static_cast<jstring>(env->GetObjectArrayElement(defines, i));
+            if (element == nullptr) {
+                continue;
+            }
+            const char* text = env->GetStringUTFChars(element, nullptr);
+            if (text != nullptr) {
+                request.defines.emplace_back(text);
+                env->ReleaseStringUTFChars(element, text);
+            }
+            env->DeleteLocalRef(element);
+        }
+    }
+
+    ShaderTranslator* translator = shaderTranslator();
+    TranslationResult result;
+    if (translator == nullptr || !translator->available()) {
+        result.error =
+            "no GLSL to SPIR-V compiler is linked into this build, so no shader can be compiled";
+    } else {
+        // Consults the same process-wide cache ShaderManager uses, so this is a
+        // genuine cache pre-warm rather than a parallel compiler: createShader()
+        // with the same source afterwards reads what was stored here. Without
+        // that, calling this and then creating a shader would compile twice.
+        const std::string cache_key =
+            ShaderCache::buildKey(request.stage, request.source, request.defines, "vulkan",
+                                  ShaderManager::toolchain_version(translator));
+        std::vector<uint32_t> cached;
+        if (spirvCache().lookup(cache_key, &cached)) {
+            recordTranslation(true, 0, true, false);
+            result.success = true;
+            result.spirv = std::move(cached);
+            // A cached artifact was validated when it was first compiled; saying
+            // so is accurate, and a cache that skipped validation would have
+            // failed on the first compile instead.
+            result.validated = true;
+        } else {
+            result = translator->translate(request);
+            recordTranslation(result.success, result.compile_ms, false, false);
+            if (result.success) {
+                spirvCache().store(cache_key, request.stage, result.spirv);
+            }
+        }
+    }
+
+    const jsize header = 5;
+    const jsize word_count = result.success ? static_cast<jsize>(result.spirv.size()) : 0;
+    jlongArray out = env->NewLongArray(header + word_count);
+    if (out == nullptr) {
+        return nullptr;
+    }
+
+    jlong values[header];
+    {
+        std::lock_guard<std::mutex> lock(g_translation_mutex);
+        ++g_translation_token;
+        g_translation_error = result.success ? std::string() : result.error;
+        values[0] = static_cast<jlong>(g_translation_token);
+    }
+    values[1] = result.success ? 0 : 1;
+    values[2] = result.validated ? 1 : 0;
+    values[3] = static_cast<jlong>(result.compile_ms);
+    values[4] = word_count;
+    env->SetLongArrayRegion(out, 0, header, values);
+    for (jsize i = 0; i < word_count; ++i) {
+        const jlong word = static_cast<jlong>(result.spirv[static_cast<size_t>(i)]);
+        env->SetLongArrayRegion(out, header + i, 1, &word);
+    }
+    return out;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeTranslationError(
+    JNIEnv* env, jobject thiz, jlong token
+) {
+    std::string error;
+    {
+        std::lock_guard<std::mutex> lock(g_translation_mutex);
+        // Only the error belonging to this compilation. A stale token means the
+        // caller is asking about a result that has since been superseded, and
+        // handing back the newer message would be a lie.
+        if (token == static_cast<uint64_t>(g_translation_token)) {
+            error = g_translation_error;
+        }
+    }
+    return env->NewStringUTF(error.c_str());
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeValidateSpirv(
+    JNIEnv* env, jobject thiz, jintArray words
+) {
+    if (words == nullptr) {
+        return JNI_FALSE;
+    }
+    const jsize count = env->GetArrayLength(words);
+    if (count <= 0) {
+        return JNI_FALSE;
+    }
+    std::vector<uint32_t> spirv(static_cast<size_t>(count));
+    jint* raw = env->GetIntArrayElements(words, nullptr);
+    if (raw == nullptr) {
+        return JNI_FALSE;
+    }
+    for (jsize i = 0; i < count; ++i) {
+        spirv[static_cast<size_t>(i)] = static_cast<uint32_t>(raw[i]);
+    }
+    env->ReleaseIntArrayElements(words, raw, JNI_ABORT);
+
+    ShaderTranslator* translator = shaderTranslator();
+    if (translator == nullptr || !translator->available()) {
+        return JNI_FALSE;
+    }
+    return translator->validate(spirv).success ? JNI_TRUE : JNI_FALSE;
+}
 
 } // namespace copper

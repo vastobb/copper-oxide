@@ -398,8 +398,19 @@ jobs:
             echo "--- test result summary ---"
             grep 'Tests run:' instrumented-tests.log || true
             grep 'OK (' instrumented-tests.log || true
+            echo "--- per-class execution ---"
+            grep -E '^(com\.oxide\.mc\.copperoxide\.[A-Za-z]+):' instrumented-tests.log || true
+            grep -c 'AssumptionViolatedException' instrumented-tests.log || true
             echo "--- end summary ---"
             grep -q 'OK (' instrumented-tests.log && ! grep -q 'FAILURES!!!' instrumented-tests.log
+            # The shader translation suite must actually execute. It is written so
+            # that it cannot skip - no Assume, no GPU - because the CI emulator's
+            # guest graphics API is OpenGL ES 3.0 via SwiftShader and has no
+            # Vulkan device, so the Vulkan suite skips entirely. Without this
+            # check, a build that silently stopped running the translation tests
+            # would report OK (N tests) all the same, because a skipped JUnit test
+            # is indistinguishable from a passed one in that output.
+            grep -q 'ShaderTranslationTest' instrumented-tests.log
 
       - name: Upload renderer logcat
         if: always()

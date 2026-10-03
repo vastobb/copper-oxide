@@ -598,6 +598,62 @@ open class CopperOxideRenderer(
      */
     fun setShaderIncludeRoot(root: String) = nativeSetShaderIncludeRoot(root)
 
+    /**
+     * Compiles GLSL to SPIR-V without creating a renderer, a device or a shader
+     * module.
+     *
+     * Needs no GPU at all, which is what makes the translation path testable
+     * anywhere rather than only on a device that happens to have Vulkan. Two
+     * legitimate uses beyond testing: warming the SPIR-V cache during a loading
+     * screen, and checking a precompiled `.spv` with [validateSpirv].
+     *
+     * The returned SPIR-V is what [createShader] hands to the Vulkan backend, and
+     * it goes through the same process-wide cache. Calling this and then
+     * [createShader] with the same source therefore compiles once, not twice.
+     *
+     * [error] is empty on success and otherwise carries the compiler's own
+     * line-annotated diagnostics.
+     */
+    fun compileToSpirv(
+        stage: ShaderStage,
+        source: String,
+        defines: Array<String> = emptyArray(),
+    ): SpirvCompilation {
+        val packed = nativeCompileToSpirv(stage.code, source, defines)
+        // Layout: token, status, validated, compile ms, word count, words.
+        val wordCount = packed[4].toInt()
+        val spirv = IntArray(wordCount) { packed[5 + it].toInt() }
+        val succeeded = packed[1] == 0L
+        return SpirvCompilation(
+            succeeded = succeeded,
+            spirv = spirv,
+            validated = packed[2] == 1L,
+            compileMs = packed[3],
+            // Asked for by token, so a concurrent compile cannot substitute its
+            // own message for this one.
+            error = if (succeeded) "" else nativeTranslationError(packed[0]),
+        )
+    }
+
+    /**
+     * Runs SPIR-V validation over words the caller already has, for example a
+     * `.spv` shipped as an asset.
+     *
+     * Returns false for a module that is structurally not SPIR-V, or that fails
+     * validation, or when this build has no validator linked.
+     */
+    fun validateSpirv(spirv: IntArray): Boolean = nativeValidateSpirv(spirv)
+
+    external private fun nativeCompileToSpirv(
+        stageCode: Int,
+        source: String,
+        defines: Array<String>,
+    ): LongArray
+
+    external private fun nativeTranslationError(token: Long): String
+
+    external private fun nativeValidateSpirv(spirv: IntArray): Boolean
+
     external private fun nativeLastShaderError(ownerTag: Long): String
 
     external private fun nativeShaderCompileStats(ownerTag: Long): LongArray
@@ -1013,6 +1069,44 @@ data class GpuInfo(
 /**
  * Frame statistics
  */
+/**
+ * The outcome of a [CopperOxideRenderer.compileToSpirv] call.
+ *
+ * [validated] means spirv-val ran and passed, which is different from "this
+ * build has no validator": the first is a claim about the module, the second is
+ * a claim about the binary.
+ */
+data class SpirvCompilation(
+    val succeeded: Boolean,
+    val spirv: IntArray,
+    val validated: Boolean,
+    val compileMs: Long,
+    val error: String,
+) {
+    /** The SPIR-V magic number, little endian, that word 0 must carry. */
+    val looksLikeSpirv: Boolean get() = spirv.size >= 5 && spirv[0] == 0x07230203
+
+    override fun equals(other: Any?): Boolean =
+        this === other ||
+            (
+                other is SpirvCompilation &&
+                    succeeded == other.succeeded &&
+                    spirv.contentEquals(other.spirv) &&
+                    validated == other.validated &&
+                    compileMs == other.compileMs &&
+                    error == other.error
+                )
+
+    override fun hashCode(): Int {
+        var result = succeeded.hashCode()
+        result = 31 * result + spirv.contentHashCode()
+        result = 31 * result + validated.hashCode()
+        result = 31 * result + compileMs.hashCode()
+        result = 31 * result + error.hashCode()
+        return result
+    }
+}
+
 /**
  * Shader compilation and cache counters.
  *

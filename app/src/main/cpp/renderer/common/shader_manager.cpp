@@ -54,15 +54,11 @@ public:
     size_t max_cache_size_mb = 64;
     size_t current_cache_size_mb = 0;
 
-    // Compiled SPIR-V, shared by every ShaderManager in the process. One cache
-    // serves all of them because the key is a content hash: two managers asking
-    // for the same shader get the same artifact, which is the whole point. A
-    // shared_ptr because every manager holds one and the cache must outlive
-    // whichever of them is destroyed first.
-    std::shared_ptr<ShaderCache> spirv_cache = std::make_shared<ShaderCache>();
-
+    // Per-manager state only. The compiled SPIR-V and its counters are
+    // process-wide (spirvCache(), translationStats()), because the key is a
+    // content hash: two managers asking for the same shader want the same
+    // artifact, and one copy is the only way a hit can happen across them.
     std::string last_error;
-    ShaderCompileStats stats;
 };
 
 ShaderManager::ShaderManager() : pImpl(std::make_unique<Impl>()) {}
@@ -147,9 +143,8 @@ bool ShaderManager::translateGlslToSpirv(ShaderStage stage, const std::string& g
         // it costs no compilation at all. The cache is internally synchronised,
         // so only the stats update needs this lock.
         std::vector<uint32_t> cached;
-        if (pImpl->spirv_cache->lookup(cache_key, &cached)) {
-            std::lock_guard<std::mutex> lock(pImpl->mutex);
-            ++pImpl->stats.memory_hits;
+        if (spirvCache().lookup(cache_key, &cached)) {
+            recordTranslation(true, 0, true, /*disk_hit=*/false);
             *spirv_out = std::move(cached);
             return true;
         }
@@ -163,26 +158,22 @@ bool ShaderManager::translateGlslToSpirv(ShaderStage stage, const std::string& g
     request.target_api = kShaderCacheTargetApi;
 
     const TranslationResult result = translator->translate(request);
+    recordTranslation(result.success, result.compile_ms, false, false);
 
-    {
+    if (!result.success) {
         std::lock_guard<std::mutex> lock(pImpl->mutex);
-        pImpl->stats.total_ms += result.compile_ms;
-        if (!result.success) {
-            ++pImpl->stats.failures;
-            pImpl->last_error = result.error;
-            if (error_out != nullptr) {
-                *error_out = result.error;
-            }
-            return false;
+        pImpl->last_error = result.error;
+        if (error_out != nullptr) {
+            *error_out = result.error;
         }
-        ++pImpl->stats.compiled;
+        return false;
     }
 
     *spirv_out = result.spirv;
 
     // Storing is best effort: a cache that cannot be written must not fail a
     // shader that compiled correctly. The next process pays for the miss.
-    pImpl->spirv_cache->store(cache_key, stage, *spirv_out);
+    spirvCache().store(cache_key, stage, *spirv_out);
     return true;
 }
 
@@ -263,7 +254,7 @@ void ShaderManager::openShaderCache(const std::string& directory) {
     // Deliberately not under pImpl->mutex: open() touches the filesystem. The
     // cache is internally synchronised, and a lookup racing this simply misses
     // until the directory exists.
-    pImpl->spirv_cache->open(directory);
+    spirvCache().open(directory);
 }
 
 const std::string& ShaderManager::lastShaderError() const {
@@ -272,8 +263,16 @@ const std::string& ShaderManager::lastShaderError() const {
 }
 
 ShaderManager::ShaderCompileStats ShaderManager::shaderCompileStats() const {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    return pImpl->stats;
+    // Process-wide, so a pre-warm through compileToSpirv() and a later
+    // createShader() are counted in one place rather than two that disagree.
+    const TranslationStats stats = translationStats();
+    ShaderCompileStats out;
+    out.compiled = stats.compiled;
+    out.memory_hits = stats.memory_hits;
+    out.disk_hits = stats.disk_hits;
+    out.failures = stats.failures;
+    out.total_ms = stats.total_ms;
+    return out;
 }
 
 void ShaderManager::destroyShader(uint64_t handle) {
