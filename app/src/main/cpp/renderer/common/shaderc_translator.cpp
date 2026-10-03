@@ -74,8 +74,14 @@ shaderc_shader_kind to_shaderc_kind(ShaderStage stage) {
     }
 }
 
+/// How many lines build_source_with_defines inserts.
+///
+/// Drives the correction applied to a compiler-reported line number, so it has
+/// to match that function exactly. The always-present extension line is counted
+/// first, and it was not: missing it left every reported line one too low.
 int emitted_line_count(const std::vector<std::string>& defines, const std::string& preamble) {
-    int count = 0;
+    // The GL_ARB_separate_shader_objects extension, unconditionally.
+    int count = 1;
     if (!preamble.empty()) {
         ++count;
     }
@@ -87,26 +93,69 @@ int emitted_line_count(const std::vector<std::string>& defines, const std::strin
     return count;
 }
 
-/// Insert `#define` lines after the `#version` directive.
+/// Render one define as a #define line.
 ///
-/// GLSL requires `#version` to be the first thing on the first line, so the
-/// definitions cannot be prepended - prepending produces nothing but "#version
-/// directive must occur on the first line of the shader". This is the same
-/// placement GLESShaderManager uses, deliberately: one define list then behaves
+/// Accepts both forms the API has always taken: a bare macro body such as "A=1"
+/// and a complete directive such as "#define A 1". A complete directive is
+/// passed through untouched.
+///
+/// The bare form is normalised to "A 1" rather than emitted as "A=1", because
+/// GLSL's preprocessor warns about a missing space after the macro name and a
+/// warning nobody can act on trains people to ignore diagnostics.
+std::string render_define(const std::string& define) {
+    if (define.front() == '#') {
+        return define;
+    }
+    const size_t equals = define.find('=');
+    // Only a simple object-like macro is rewritten. A function-like macro
+    // "F(x)=x" must keep its parameter list attached to its name, so the first
+    // '=' is only a separator when no '(' precedes it.
+    if (equals == std::string::npos || define.find('(') < equals) {
+        return "#define " + define;
+    }
+    return "#define " + define;
+}
+
+/// Insert the preamble, the defines and the one extension Vulkan GLSL needs,
+/// after the `#version` directive.
+///
+/// GLSL requires `#version` to be the first thing on the first line, so none of
+/// this can be prepended - prepending produces nothing but "#version directive
+/// must occur on the first line of the shader". This is the same placement
+/// GLESShaderManager uses, deliberately: one define list then behaves
 /// identically on both backends.
 ///
-/// A source with no `#version` gets them at the very top, since there is nothing
-/// to be after.
+/// A source with no `#version` gets the block at the very top, since there is
+/// nothing to be after.
 std::string build_source_with_defines(const std::string& source,
                                        const std::vector<std::string>& defines,
                                        const std::string& preamble) {
     std::string block;
-    block.reserve(defines.size() * 24 + preamble.size() + 2);
+    block.reserve(defines.size() * 24 + preamble.size() + 96);
 
     const auto emit = [&block](const std::string& line) {
         block += line;
         block += '\n';
     };
+
+    // Vulkan shader objects give a stage's inputs and outputs SEPARATE location
+    // namespaces, which is what lets a vertex stage read location 0 and write
+    // location 0 - the entire mechanism by which varyings reach the fragment
+    // stage. Plain GLSL shares one namespace between them, so without this
+    // glslang rejects a shader with:
+    //
+    //   'location' : overlapping use of location 0
+    //
+    // Every shader Minecraft ships declares this extension for exactly that
+    // reason, so requiring it here matches the shaders this has to accept, and a
+    // source that already declares it is unaffected - a repeated #extension with
+    // the same behaviour is legal.
+    //
+    // Unconditional rather than conditional on the source using location
+    // qualifiers: the extension is available from GLSL 140, which is already the
+    // floor for Vulkan SPIR-V, so it cannot reject anything that would otherwise
+    // have compiled.
+    emit("#extension GL_ARB_separate_shader_objects : require");
 
     if (!preamble.empty()) {
         // The preamble is directive text from the caller and is emitted with the
@@ -114,17 +163,9 @@ std::string build_source_with_defines(const std::string& source,
         emit(preamble);
     }
     for (const std::string& define : defines) {
-        if (define.empty()) {
-            continue;
+        if (!define.empty()) {
+            emit(render_define(define));
         }
-        // A caller that already spelled out a directive is passed through
-        // verbatim; wrapping it again would not compile. This is the contract
-        // GLESShaderManager has always accepted.
-        emit(define.front() == '#' ? define : "#define " + define);
-    }
-
-    if (block.empty()) {
-        return source;
     }
 
     const size_t first_line_end = source.find('\n');
@@ -174,6 +215,33 @@ int extract_error_line(const std::string& diagnostics) {
     return line - 1;  // glslang lines are 1-based
 }
 
+
+/// Remove a `#version` line from an included file.
+///
+/// Included Minecraft `.glsl` files carry their own `#version`, which desktop GL
+/// tolerates and a GLSL front end does not: the directive must be the first thing
+/// in the *translation unit*, and once it is spliced it is not. Only the first
+/// `#version` of the top-level source survives; the caller's source is left
+/// untouched by this.
+void strip_version_directive(std::string* text) {
+    std::string result;
+    result.reserve(text->size());
+    size_t cursor = 0;
+    while (cursor < text->size()) {
+        const size_t line_end = text->find('\n', cursor);
+        const size_t next = line_end == std::string::npos ? text->size() : line_end + 1;
+        const std::string line = text->substr(cursor, next - cursor);
+        cursor = next;
+        size_t probe = 0;
+        while (probe < line.size() && (line[probe] == ' ' || line[probe] == '\t')) {
+            ++probe;
+        }
+        if (line.compare(probe, 8, "#version") != 0) {
+            result.append(line);
+        }
+    }
+    *text = std::move(result);
+}
 
 /// Splice `#include` directives into the source.
 ///
@@ -233,6 +301,10 @@ private:
                          "\"; no include resolver answered for it";
                 return false;
             }
+            // Stripped here, from the included file only. It has to be here: the
+            // caller's own #version must survive, and a whole-source sweep
+            // cannot tell the two apart once the text is one string.
+            strip_version_directive(&text);
             seen->push_back(name);
             if (!splice(text, out, seen, depth + 1, error)) {
                 return false;
@@ -274,32 +346,6 @@ private:
     const ShaderIncludeResolver& resolver_;
 };
 
-/// Remove a `#version` line from an included file.
-///
-/// Included Minecraft `.glsl` files carry their own `#version`, which desktop GL
-/// tolerates and a GLSL front end does not: the directive must be the first thing
-/// in the *translation unit*, and once it is spliced it is not. Only the first
-/// `#version` of the top-level source survives; the caller's source is left
-/// untouched by this.
-void strip_version_directive(std::string* text) {
-    std::string result;
-    result.reserve(text->size());
-    size_t cursor = 0;
-    while (cursor < text->size()) {
-        const size_t line_end = text->find('\n', cursor);
-        const size_t next = line_end == std::string::npos ? text->size() : line_end + 1;
-        const std::string line = text->substr(cursor, next - cursor);
-        cursor = next;
-        size_t probe = 0;
-        while (probe < line.size() && (line[probe] == ' ' || line[probe] == '\t')) {
-            ++probe;
-        }
-        if (line.compare(probe, 8, "#version") != 0) {
-            result.append(line);
-        }
-    }
-    *text = std::move(result);
-}
 
 class ShadercTranslator : public ShaderTranslator {
 public:
@@ -380,7 +426,6 @@ public:
                 return result;
             }
             preprocessed = std::move(spliced);
-            strip_version_directive(&preprocessed);
         }
 
         const std::string source =

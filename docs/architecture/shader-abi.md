@@ -149,12 +149,56 @@ Both are inserted **after the `#version` line**, because GLSL requires
 `#version` to be the first thing on the first line. The same list behaves
 identically on both backends.
 
+One directive is also inserted, on Vulkan only:
+
+```glsl
+#extension GL_ARB_separate_shader_objects : require
+```
+
+Vulkan shader objects give a stage's inputs and outputs **separate** location
+namespaces. That is what lets a vertex stage read `location = 0` and write
+`location = 0` — the whole mechanism by which varyings reach the fragment stage.
+Plain GLSL shares one namespace between them, so without this a shader gets:
+
+```
+'location' : overlapping use of location 0
+```
+
+Minecraft's own shaders declare this extension for the same reason. Declaring it
+yourself is harmless; a repeated `#extension` with the same behaviour is legal.
+It is available from GLSL 140, which is already the floor for Vulkan SPIR-V, so
+it cannot reject a shader that would otherwise have compiled.
+
 Defines are part of the cache key. Two shaders that differ only by defines are
 two cache entries and two compilations, which is correct: they are two shaders.
 
 ---
 
-## 6. Caching
+## 6. Includes
+
+`#include <name>` and `#include "name"` are resolved before compilation, by
+Copper Oxide rather than by the compiler. Two reasons:
+
+* A GLSL front end reads `#version` out of the **raw** text, before any
+  preprocessing, so a `#version` arriving through an include is a hard parse
+  error. Resolving first lets the included file's own `#version` be stripped,
+  which is required and is exactly what Minecraft's `include/` directory needs.
+* Minecraft writes its includes as `#include <minecraft:fog.glsl>`, where
+  `minecraft:` is a URI scheme. A filesystem cannot answer that, so the scheme is
+  stripped and the rest resolved under the directory given to
+  `setShaderIncludeRoot()`. A `..` segment is refused: a shader has no
+  legitimate reason to read outside its own asset tree.
+
+A file is spliced **at most once** per translation unit. Textual concatenation
+of a guarded header into two includers produces a duplicate definition, which is
+a compile error, so splicing once is what makes ordinary include guards work — and
+it terminates a cycle as a side effect.
+
+An include that cannot be resolved is a reported error, never silently dropped.
+
+---
+
+## 7. Caching
 
 Compiled SPIR-V is cached in memory, and optionally on disk under a directory
 you supply via `openShaderCache()`.
@@ -173,7 +217,7 @@ cache from an absent one.
 
 ---
 
-## 7. Known gaps
+## 8. Known gaps
 
 Stated as gaps rather than left to be discovered:
 
@@ -183,13 +227,13 @@ Stated as gaps rather than left to be discovered:
 | No push-constant upload | Push constants cannot be set from the API | Same work as descriptors |
 | No SPIR-V reflection | Descriptor types are inferred by a fixed heuristic | SPIRV-Cross reflection over the module |
 | No legacy GLSL rewriting | `#version 120`/`130` shader packs fail to compile | A rewrite pass before the compiler |
-| No `#include` resolution | A shader that includes another file fails | A file-system-backed include resolver |
+| No `#version 110`/`120` shaders | Pre-1.17 shader packs fail: glslang refuses to target Vulkan SPIR-V below 140 | A legacy lifter (`varying`→`in`, `texture2D`→`texture`, loose uniforms→UBO) |
 | No SPIR-V → ESSL path | A shader written for Vulkan cannot run on GLES | SPIRV-Cross `spvc_compile` to GLSL ES |
 | No shader-pack macro layer | Iris/Sodium `#define IRIS_*` conventions are not provided | A macro provider driven by device and buffer type |
 
 ---
 
-## 8. Test shaders
+## 9. Test shaders
 
 Every shader in this repository's tests was written clean-room for Copper Oxide.
 Minecraft's own shaders and every published shader pack are proprietary or

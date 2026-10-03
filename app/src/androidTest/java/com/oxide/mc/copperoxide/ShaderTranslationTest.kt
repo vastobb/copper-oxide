@@ -247,8 +247,12 @@ class ShaderTranslationTest {
                 frag_color = vec4(1.0);
             }
         """.trimIndent()
+        // Derived from the source rather than hard-coded: the point of the
+        // assertion below is that the reported line tracks the caller's text, so
+        // pinning the expected value here as well would only duplicate the
+        // answer this test is trying to check.
         val brokenLine = broken.lines().indexOfFirst { it.contains("this_symbol_does_not_exist") } + 1
-        assertEquals(7, brokenLine)
+        assertTrue("the test fixture is not shaped as expected", brokenLine > 0)
 
         val result = renderer.compileToSpirv(
             CopperOxideRenderer.ShaderStage.Fragment,
