@@ -855,8 +855,15 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeLastShaderError(
     JNIEnv* env, jobject thiz, jlong owner
 ) {
-    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
-    const std::string error = renderer != nullptr ? renderer->lastShaderError() : std::string();
+    // Reached through the manager rather than through a RendererBase pass-through:
+    // the diagnostics belong to the shader manager, and a second accessor for
+    // them would be a second thing to keep in step.
+    std::string error;
+    if (RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner))) {
+        if (ShaderManager* shaders = renderer->getShaderManager()) {
+            error = shaders->lastShaderError();
+        }
+    }
     return env->NewStringUTF(error.c_str());
 }
 
