@@ -245,6 +245,11 @@ open class CopperOxideRenderer(
                 ) {
                     lastStatsEmitNanos = frameEnd
                     val stats = getFrameStats()
+                    Log.i(
+                        TAG,
+                        "render thread owner=$ownerTag emitting stats: " +
+                            "frame=${stats.frameNumber} time=${stats.frameTimeMs}",
+                    )
                     // The callback is dispatched rather than invoked: it runs on
                     // the main thread, which is where a UI observer expects it,
                     // and the render thread must never block on the UI.
