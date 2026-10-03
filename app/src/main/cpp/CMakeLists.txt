@@ -135,8 +135,17 @@ FetchContent_MakeAvailable(glslang)
 # then those targets do not exist and target_include_directories would fail.
 if(DEFINED SPIRV-Headers_SOURCE_DIR)
     set(COPPER_SPIRV_HEADERS_INCLUDE "${SPIRV-Headers_SOURCE_DIR}/include")
-    foreach(dependent_target SPIRV-Tools SPIRV-Tools-static glslang SPIRV)
+    foreach(dependent_target SPIRV-Tools glslang SPIRV)
         if(TARGET ${dependent_target})
+            # SPIRV-Tools is an ALIAS for SPIRV-Tools-static when
+            # SPIRV_TOOLS_BUILD_STATIC is on, and CMake forbids
+            # target_include_directories on an ALIAS. Resolving the alias rather
+            # than hard-coding a name keeps this correct either way.
+            set(aliased_target "")
+            get_target_property(aliased_target ${dependent_target} ALIASED_TARGET)
+            if(aliased_target)
+                set(dependent_target ${aliased_target})
+            endif()
             target_include_directories(${dependent_target} PUBLIC "${COPPER_SPIRV_HEADERS_INCLUDE}")
         endif()
     endforeach()
@@ -220,7 +229,9 @@ if(TARGET SPIRV-Tools)
         "${COPPER_SPIRV_HEADERS_INCLUDE}"
         "${spirv_tools_SOURCE_DIR}/include")
     target_compile_definitions(copper-oxide PRIVATE COPPER_HAVE_SPIRV_TOOLS=1)
-    target_link_libraries(copper-oxide PRIVATE SPIRV-Tools)
+    # Plain signature, matching the target_link_libraries call above: CMake
+    # rejects mixing the plain and keyword forms for one target.
+    target_link_libraries(copper-oxide SPIRV-Tools)
 else()
     message(WARNING "SPIRV-Tools is unavailable; SPIR-V will be structurally checked only")
 endif()
