@@ -204,6 +204,23 @@ class RendererConfigTest {
     }
 
     @Test
+    fun `shader stage enum offers exactly the stages the backends support`() {
+        // The native side rejects tessellation, mesh, task and ray-tracing
+        // stages before invoking the compiler, because no extension is enabled
+        // that could consume them. This enum is the API-level guard for that:
+        // a caller cannot ask for a stage that would be refused, so it cannot
+        // discover the refusal the hard way. Adding an entry here without
+        // native support would reintroduce exactly that.
+        //
+        // See docs/architecture/shader-abi.md for the stage matrix and the
+        // reason each unsupported stage is refused rather than compiled.
+        assertEquals(
+            listOf("Vertex", "Fragment", "Compute", "Geometry"),
+            CopperOxideRenderer.ShaderStage.entries.map { it.name },
+        )
+    }
+
+    @Test
     fun `frame stats compute fps from frame time and guard against zero`() {
         val stats = com.oxide.mc.copperoxide.renderer.FrameStats(
             frameNumber = 7,
