@@ -41,6 +41,43 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(vma)
 
+# ---------------------------------------------------------------------------
+# Shader toolchain: shaderc (GLSL -> SPIR-V, plus SPIRV-Tools for validation)
+#
+# shaderc is Khronos' own packaging of glslang + SPIRV-Tools + SPIRV-Headers
+# behind one stable C API, and it is what Android's own shader tooling links.
+# Composing those three by hand means resolving who owns SPIRV-Headers, in
+# exactly one order, which is the part that goes wrong; shaderc already resolved
+# it. Everything below is static so the compiler ends up inside
+# libcopper-oxide.so rather than adding .so files to the APK.
+#
+# Licence: Apache-2.0, which is compatible with this project's MIT licence.
+# See THIRD_PARTY_NOTICES.md.
+# ---------------------------------------------------------------------------
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Static only; a shared glslang would add a second .so" FORCE)
+set(SHADERC_SKIP_TESTS     ON  CACHE BOOL "No gtest in an APK" FORCE)
+set(SHADERC_SKIP_EXAMPLES  ON  CACHE BOOL "" FORCE)
+set(SHADERC_SKIP_INSTALL   ON  CACHE BOOL "Nothing is installed from an app build" FORCE)
+set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "glslangValidator has no place in an APK" FORCE)
+set(ENABLE_OPT             OFF CACHE BOOL "spirv-opt is not used at run time" FORCE)
+set(ENABLE_HLSL            OFF CACHE BOOL "Copper Oxide has no HLSL path" FORCE)
+set(ENABLE_GLSLANG_JS      OFF CACHE BOOL "" FORCE)
+set(ENABLE_EXTERNAL        OFF CACHE BOOL "Do not build glslang's External/ deps" FORCE)
+set(ENABLE_PCH             OFF CACHE BOOL "A PCH per target in a FetchContent build is pure cost" FORCE)
+# ON so glslang's objects match copper-oxide's -frtti/-fexceptions instead of
+# differing across a static-library boundary.
+set(ENABLE_RTTI            ON  CACHE BOOL "" FORCE)
+set(ENABLE_EXCEPTIONS      ON  CACHE BOOL "Compile failures are returned, not thrown" FORCE)
+set(GLSLANG_TESTS          OFF CACHE BOOL "" FORCE)
+set(GLSLANG_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+    shaderc
+    URL https://github.com/google/shaderc/archive/refs/tags/v2024.4.tar.gz
+)
+FetchContent_MakeAvailable(shaderc)
+
+
 # Copper Oxide Renderer Library
 add_library(copper-oxide SHARED
     # Common renderer
@@ -56,6 +93,9 @@ add_library(copper-oxide SHARED
     renderer/common/sync_manager.cpp
     renderer/common/resource_pool.cpp
     renderer/common/profiler.cpp
+    renderer/common/shader_cache.cpp
+    renderer/common/shader_translator.cpp
+    renderer/common/shaderc_translator.cpp
 
     # Vulkan backend
     renderer/vulkan/vulkan_renderer.cpp
@@ -100,6 +140,7 @@ target_link_libraries(copper-oxide
     ${EGL-lib}
     ${GLESv3-lib}
     ${vulkan-lib}
+    shaderc            # GLSL -> SPIR-V, and SPIRV-Tools for validation
 )
 
 # Visibility and PIC only.

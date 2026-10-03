@@ -1,0 +1,533 @@
+// shaderc-backed GLSL -> SPIR-V compiler.
+//
+// WHY shaderc rather than glslang wired up by hand: shaderc is Khronos' own
+// packaging of glslang + SPIRV-Tools + SPIRV-Headers behind one stable C API,
+// and it is what Android's own shader tooling links. Using it means one
+// FetchContent and one CMake target instead of composing three projects - and
+// the composition is the part that goes wrong, because each of the three wants
+// to own SPIRV-Headers and that has to be resolved in exactly one order.
+//
+// The interface this implements is in shader_translator.h; nothing above it names
+// shaderc, so the choice is confined to this file.
+
+#include "shader_translator.h"
+
+#include <android/log.h>
+#include <shaderc/shaderc.hpp>
+
+// Real SPIR-V validation, when the SPIRV-Tools that shaderc vendors is visible.
+// __has_include rather than an unconditional include, so a build that resolves
+// shaderc without the validator headers still compiles - it just reports that
+// validation did not run instead of pretending it did.
+#if defined(__has_include)
+#if __has_include(<spirv-tools/libspirv.hpp>)
+#define COPPER_HAVE_SPIRV_TOOLS 1
+#include <spirv-tools/libspirv.hpp>
+#endif
+#endif
+
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#define LOG_TAG "CopperOxide-ShaderTx"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+namespace copper {
+namespace {
+
+// SPIR-V magic, little endian. Checked before anything reaches the driver:
+// vkCreateShaderModule rejects a bad module with a message that says nothing
+// about the real problem.
+constexpr uint32_t kSpirvMagic = 0x07230203u;
+
+// Vulkan version the generated SPIR-V targets.
+//
+// 1.0 / SPIR-V 1.3, not 1.1 / 1.5, because Copper Oxide must run on a Vulkan 1.0
+// device: the renderer pins the Vulkan ABI to 1.0 for Android's libvulkan.so and
+// cannot assume 1.1 even though create_instance asks for it. Raising this is a
+// one-line change once the renderer reports the device's real apiVersion.
+constexpr shaderc_env_version kTargetEnv = shaderc_env_version_vulkan_1_0;
+constexpr shaderc_spv_version kTargetSpv = shaderc_spv_version_1_3;
+
+shaderc_shader_kind to_shaderc_kind(ShaderStage stage) {
+    switch (stage) {
+        case ShaderStage::Vertex: return shaderc_vertex_shader;
+        case ShaderStage::Fragment: return shaderc_fragment_shader;
+        case ShaderStage::Compute: return shaderc_compute_shader;
+        case ShaderStage::Geometry: return shaderc_geometry_shader;
+        case ShaderStage::TessellationControl: return shaderc_tess_control_shader;
+        case ShaderStage::TessellationEvaluation: return shaderc_tess_evaluation_shader;
+        default: return shaderc_vertex_shader;
+    }
+}
+
+int emitted_line_count(const std::vector<std::string>& defines, const std::string& preamble) {
+    int count = 0;
+    if (!preamble.empty()) {
+        ++count;
+    }
+    for (const std::string& define : defines) {
+        if (!define.empty()) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+/// Insert `#define` lines after the `#version` directive.
+///
+/// GLSL requires `#version` to be the first thing on the first line, so the
+/// definitions cannot be prepended - prepending produces nothing but "#version
+/// directive must occur on the first line of the shader". This is the same
+/// placement GLESShaderManager uses, deliberately: one define list then behaves
+/// identically on both backends.
+///
+/// A source with no `#version` gets them at the very top, since there is nothing
+/// to be after.
+std::string build_source_with_defines(const std::string& source,
+                                       const std::vector<std::string>& defines,
+                                       const std::string& preamble) {
+    std::string block;
+    block.reserve(defines.size() * 24 + preamble.size() + 2);
+
+    const auto emit = [&block](const std::string& line) {
+        block += line;
+        block += '\n';
+    };
+
+    if (!preamble.empty()) {
+        // The preamble is directive text from the caller and is emitted with the
+        // defines, so it lands in the same legal position.
+        emit(preamble);
+    }
+    for (const std::string& define : defines) {
+        if (define.empty()) {
+            continue;
+        }
+        // A caller that already spelled out a directive is passed through
+        // verbatim; wrapping it again would not compile. This is the contract
+        // GLESShaderManager has always accepted.
+        emit(define.front() == '#' ? define : "#define " + define);
+    }
+
+    if (block.empty()) {
+        return source;
+    }
+
+    const size_t first_line_end = source.find('\n');
+    if (first_line_end == std::string::npos) {
+        return block + source;
+    }
+    if (source.compare(0, 8, "#version") != 0) {
+        return block + source;
+    }
+    // +1 keeps the original first line and its newline intact, so the original
+    // source is a contiguous substring of what is compiled.
+    return source.substr(0, first_line_end + 1) + block + source.substr(first_line_end + 1);
+}
+
+/// Cheap structural checks that hold regardless of whether the validator is
+/// linked in. These are not a substitute for spirv-val; they catch the two
+/// mistakes that would otherwise reach the driver: something that is not SPIR-V
+/// at all, and a truncated payload.
+bool is_structurally_valid_spirv(const std::vector<uint32_t>& spirv) {
+    // Five words is the header: magic, version, generator, bound, schema.
+    return spirv.size() >= 5 && spirv[0] == kSpirvMagic;
+}
+
+/// First source line the compiler blamed, or -1.
+///
+/// glslang reports "ERROR: 0:LINE: message" and the number is relative to the
+/// string it was given - which is the source with the define block inserted. That
+/// shifts every line by the number of injected lines, so it is adjusted back out
+/// before being reported against the source the caller wrote.
+int extract_error_line(const std::string& diagnostics) {
+    const size_t marker = diagnostics.find("ERROR: 0:");
+    if (marker == std::string::npos) {
+        return -1;
+    }
+    size_t cursor = marker + 9;
+    int line = 0;
+    bool any_digit = false;
+    while (cursor < diagnostics.size() && diagnostics[cursor] >= '0' &&
+           diagnostics[cursor] <= '9') {
+        line = line * 10 + (diagnostics[cursor] - '0');
+        ++cursor;
+        any_digit = true;
+    }
+    if (!any_digit || cursor >= diagnostics.size() || diagnostics[cursor] != ':') {
+        return -1;
+    }
+    return line - 1;  // glslang lines are 1-based
+}
+
+
+/// Splice `#include` directives into the source.
+///
+/// The rule that matters: a file is spliced AT MOST ONCE per translation unit.
+/// A naive line-concatenation resolver defeats every include guard, because by
+/// the time the preprocessor runs the guarded body has already been duplicated
+/// into each includer and the second copy is a redefinition error. Splicing once
+/// gives the same result as a guard while also terminating cycles.
+class IncludeSplicer {
+public:
+    explicit IncludeSplicer(const ShaderIncludeResolver& resolver) : resolver_(resolver) {}
+
+    /// Returns false and fills `error` when an include cannot be resolved.
+    bool resolve(const std::string& source, std::string* out, std::string* error) {
+        out->clear();
+        std::vector<std::string> seen;
+        if (!splice(source, out, &seen, 0, error)) {
+            return false;
+        }
+        return true;
+    }
+
+private:
+    static constexpr int kMaxDepth = 32;
+
+    bool splice(const std::string& source, std::string* out,
+                std::vector<std::string>* seen, int depth, std::string* error) {
+        if (depth > kMaxDepth) {
+            *error = "the include chain is deeper than " + std::to_string(kMaxDepth) +
+                     " levels, which is almost certainly a cycle the once-only rule did not catch";
+            return false;
+        }
+
+        size_t cursor = 0;
+        while (cursor < source.size()) {
+            const size_t line_end = source.find('\n', cursor);
+            const size_t next = line_end == std::string::npos ? source.size() : line_end + 1;
+            const std::string line = source.substr(cursor, next - cursor);
+            cursor = next;
+
+            std::string name;
+            const bool is_include = parse_include(line, &name);
+            if (!is_include) {
+                out->append(line);
+                continue;
+            }
+
+            if (std::find(seen->begin(), seen->end(), name) != seen->end()) {
+                // Already spliced: an include guard, or a cycle. Either way the
+                // body is present once, which is what both want.
+                continue;
+            }
+
+            std::string text;
+            if (!resolver_ || !resolver_(name, &text)) {
+                *error = "cannot resolve the include \"" + name +
+                         "\"; no include resolver answered for it";
+                return false;
+            }
+            seen->push_back(name);
+            if (!splice(text, out, seen, depth + 1, error)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Matches `#include <name>` and `#include "name"`, ignoring leading space.
+    /// A directive with anything else after it is left alone, so a commented-out
+    /// include inside a block comment is still removed with that block by the
+    /// compiler's own lexer rather than being spliced here.
+    static bool parse_include(const std::string& line, std::string* name) {
+        size_t cursor = 0;
+        while (cursor < line.size() && (line[cursor] == ' ' || line[cursor] == '\t')) {
+            ++cursor;
+        }
+        static const std::string kDirective = "#include";
+        if (line.compare(cursor, kDirective.size(), kDirective) != 0) {
+            return false;
+        }
+        cursor += kDirective.size();
+        if (cursor >= line.size()) {
+            return false;
+        }
+        const char open = line[cursor];
+        if (open != '<' && open != '"') {
+            return false;
+        }
+        const char close = open == '<' ? '>' : '"';
+        const size_t close_pos = line.find(close, cursor + 1);
+        if (close_pos == std::string::npos) {
+            return false;
+        }
+        *name = line.substr(cursor + 1, close_pos - cursor - 1);
+        return !name->empty();
+    }
+
+    const ShaderIncludeResolver& resolver_;
+};
+
+/// Remove a `#version` line from an included file.
+///
+/// Included Minecraft `.glsl` files carry their own `#version`, which desktop GL
+/// tolerates and a GLSL front end does not: the directive must be the first thing
+/// in the *translation unit*, and once it is spliced it is not. Only the first
+/// `#version` of the top-level source survives; the caller's source is left
+/// untouched by this.
+void strip_version_directive(std::string* text) {
+    std::string result;
+    result.reserve(text->size());
+    size_t cursor = 0;
+    while (cursor < text->size()) {
+        const size_t line_end = text->find('\n', cursor);
+        const size_t next = line_end == std::string::npos ? text->size() : line_end + 1;
+        const std::string line = text->substr(cursor, next - cursor);
+        cursor = next;
+        size_t probe = 0;
+        while (probe < line.size() && (line[probe] == ' ' || line[probe] == '\t')) {
+            ++probe;
+        }
+        if (line.compare(probe, 8, "#version") != 0) {
+            result.append(line);
+        }
+    }
+    *text = std::move(result);
+}
+
+class ShadercTranslator : public ShaderTranslator {
+public:
+    ShadercTranslator() = default;
+
+    ~ShadercTranslator() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (compiler_ != nullptr) {
+            shaderc_compiler_release(compiler_);
+            compiler_ = nullptr;
+        }
+        if (options_ != nullptr) {
+            shaderc_compile_options_release(options_);
+            options_ = nullptr;
+        }
+    }
+
+    ShadercTranslator(const ShadercTranslator&) = delete;
+    ShadercTranslator& operator=(const ShadercTranslator&) = delete;
+
+    bool available() const override { return compiler_ != nullptr; }
+
+    std::string toolchainId() const override {
+        std::string id = "shaderc-";
+        id += std::to_string(shaderc_version());
+        id += "-vk1.0-spv1.3";
+#ifdef COPPER_HAVE_SPIRV_TOOLS
+        id += "+spirv-tools";
+#else
+        id += "+no-validator";
+#endif
+        return id;
+    }
+
+    bool hasValidator() const override {
+#ifdef COPPER_HAVE_SPIRV_TOOLS
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    void initialize() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (compiler_ != nullptr) {
+            return;
+        }
+        compiler_ = shaderc_compiler_initialize();
+        options_ = shaderc_compile_options_initialize();
+        if (compiler_ == nullptr || options_ == nullptr) {
+            LOGE("shaderc failed to initialise; the Vulkan backend cannot accept GLSL");
+            if (compiler_ != nullptr) {
+                shaderc_compiler_release(compiler_);
+                compiler_ = nullptr;
+            }
+            if (options_ != nullptr) {
+                shaderc_compile_options_release(options_);
+                options_ = nullptr;
+            }
+            return;
+        }
+
+        shaderc_compile_options_set_source_language(options_, shaderc_source_language_glsl);
+        shaderc_compile_options_set_target_env(options_, shaderc_target_env_vulkan, kTargetEnv);
+        shaderc_compile_options_set_target_spv(options_, kTargetSpv);
+        // WHY on: plain GLSL carries no descriptor bindings and Vulkan requires
+        // one per resource. Without this, a Minecraft-style shader declaring
+        // `uniform sampler2D tex` compiles and then fails at pipeline creation
+        // with nothing to point at.
+        shaderc_compile_options_set_auto_bind_uniforms(options_, true);
+        // WHY off: Copper Oxide bakes vertex attribute locations 0 and 1 into its
+        // pipeline. Auto-assignment would hand out whatever location glslang
+        // chose and silently mismatch the vertex layout, which is worse than a
+        // link error telling the author to write layout(location=).
+        shaderc_compile_options_set_auto_map_locations(options_, false);
+        // No optimisation pass here: the driver optimises at pipeline creation,
+        // and running one on the device costs startup time for nothing.
+        shaderc_compile_options_set_optimization_level(options_, shaderc_optimization_level_zero);
+        shaderc_compile_options_set_generate_debug_info(options_, false);
+    }
+
+    TranslationResult translate(const TranslationRequest& request) override {
+        TranslationResult result;
+        const auto started = std::chrono::steady_clock::now();
+
+        if (!isShaderStageSupported(request.stage)) {
+            result.error = std::string("the Vulkan backend does not support a ") +
+                           shaderStageName(request.stage) + " shader";
+            return result;
+        }
+
+        // Includes are resolved BEFORE the defines are injected, so a resolved
+        // file's own #version is stripped and only the caller's survives.
+        std::string preprocessed = request.source;
+        if (request.resolve_includes && preprocessed.find("#include") != std::string::npos) {
+            IncludeSplicer splicer(shaderIncludeResolver());
+            std::string spliced;
+            std::string include_error;
+            if (!splicer.resolve(preprocessed, &spliced, &include_error)) {
+                result.error = include_error;
+                LOGE("%s shader include resolution failed: %s", shaderStageName(request.stage),
+                     include_error.c_str());
+                return result;
+            }
+            preprocessed = std::move(spliced);
+            strip_version_directive(&preprocessed);
+        }
+
+        const std::string source =
+            build_source_with_defines(preprocessed, request.defines, request.preamble);
+
+        size_t word_count = 0;
+        std::string diagnostics;
+        std::vector<uint32_t> spirv;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (compiler_ == nullptr) {
+                result.error =
+                    "no GLSL to SPIR-V compiler is linked into this build, so the Vulkan backend "
+                    "cannot accept GLSL source";
+                return result;
+            }
+
+            shaderc_compilation_result_t compiled = shaderc_compile_into_spv(
+                options_, compiler_, source.c_str(), source.size(),
+                to_shaderc_kind(request.stage),
+                request.entry_point.empty() ? "main" : request.entry_point.c_str(), "main",
+                shaderc_compilation_stage_vertex, shaderc_compilation_stage_fragment,
+                shaderc_compilation_stage_compute, shaderc_compilation_stage_geometry,
+                shaderc_compilation_stage_tesscontrol, shaderc_compilation_stage_tesseval, 0,
+                nullptr);
+
+            if (compiled == nullptr) {
+                result.error = "the shader compiler returned no result";
+                return result;
+            }
+            if (shaderc_result_get_compilation_status(compiled) !=
+                shaderc_compilation_success) {
+                const char* errors = shaderc_result_get_error_message(compiled);
+                diagnostics = errors != nullptr ? errors : "unknown compiler failure";
+            } else {
+                const char* bytes = shaderc_result_get_bytes(compiled, &word_count);
+                if (bytes == nullptr || word_count == 0) {
+                    diagnostics = "the compiler reported success but produced no SPIR-V";
+                } else {
+                    spirv.resize(word_count);
+                    std::memcpy(spirv.data(), bytes, word_count * sizeof(uint32_t));
+                }
+            }
+            shaderc_result_release(compiled);
+        }
+
+        if (!diagnostics.empty()) {
+            const int injected =
+                emitted_line_count(request.defines, request.preamble);
+            const int reported = extract_error_line(diagnostics);
+            // glslang counted the injected lines; take them back out so the
+            // number indexes the source the caller wrote.
+            result.error_line = reported >= 0 ? reported - injected : -1;
+            result.error = diagnostics;
+            LOGE("%s shader compilation failed: %s", shaderStageName(request.stage),
+                 diagnostics.c_str());
+            return result;
+        }
+
+        if (!is_structurally_valid_spirv(spirv)) {
+            result.error = "the compiler produced a payload that is not a SPIR-V module";
+            LOGE("%s shader compilation produced invalid SPIR-V (%zu words)",
+                 shaderStageName(request.stage), spirv.size());
+            return result;
+        }
+
+        const TranslationResult validation = validate(spirv);
+        if (!validation.success) {
+            result.error = "SPIR-V validation failed: " + validation.error;
+            LOGE("%s shader SPIR-V validation failed: %s", shaderStageName(request.stage),
+                 validation.error.c_str());
+            return result;
+        }
+
+        result.success = true;
+        result.spirv = std::move(spirv);
+        result.validated = validation.validated;
+        result.compile_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started)
+                .count());
+        LOGI("compiled a %s shader to %zu SPIR-V words in %llu ms%s",
+             shaderStageName(request.stage), result.spirv.size(),
+             static_cast<unsigned long long>(result.compile_ms),
+             result.validated ? " (validated)" : " (structural check only)");
+        return result;
+    }
+
+    TranslationResult validate(const std::vector<uint32_t>& spirv) override {
+        TranslationResult result;
+        if (!is_structurally_valid_spirv(spirv)) {
+            result.error = spirv.empty()
+                               ? "the payload is empty"
+                               : "the payload does not start with the SPIR-V magic number";
+            return result;
+        }
+
+#ifdef COPPER_HAVE_SPIRV_TOOLS
+        spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_0);
+        std::string message;
+        const bool ok = tools.Validate(spirv.data(), spirv.size(), &message);
+        result.success = ok;
+        result.validated = true;
+        if (!ok) {
+            result.error = message.empty() ? "spirv-val rejected the module" : message;
+        }
+        return result;
+#else
+        // Documented honestly: this build performs a structural check only and
+        // `validated` stays false, so nothing above can mistake "not checked"
+        // for "checked and good".
+        result.success = true;
+        result.validated = false;
+        result.error = "spirv-val is not linked into this build; only a structural check ran";
+        return result;
+#endif
+    }
+
+private:
+    std::mutex mutex_;
+    shaderc_compiler_t compiler_ = nullptr;
+    shaderc_compile_options_t options_ = nullptr;
+};
+
+} // namespace
+
+ShaderTranslator* createDefaultTranslator() {
+    static ShadercTranslator* translator = new ShadercTranslator();
+    return translator;
+}
+
+} // namespace copper

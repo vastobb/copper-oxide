@@ -1,10 +1,25 @@
 #include "shader_manager.h"
-#include "renderer_base.h"
 
-#include <unordered_map>
+#include "renderer_base.h"
+#include "shader_cache.h"
+#include "shader_translator.h"
+
+#include <android/log.h>
+
+#include <chrono>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+#define LOG_TAG "CopperOxide-Shader"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+// The cache key's target tag. A backend that compiles GLSL natively never
+// reaches the translator, so only Vulkan uses this today.
+static constexpr char kShaderCacheTargetApi[] = "vulkan";
 
 namespace copper {
 
@@ -38,6 +53,16 @@ public:
     RendererBase* renderer = nullptr;
     size_t max_cache_size_mb = 64;
     size_t current_cache_size_mb = 0;
+
+    // Compiled SPIR-V, shared by every ShaderManager in the process. One cache
+    // serves all of them because the key is a content hash: two managers asking
+    // for the same shader get the same artifact, which is the whole point. A
+    // shared_ptr because every manager holds one and the cache must outlive
+    // whichever of them is destroyed first.
+    std::shared_ptr<ShaderCache> spirv_cache = std::make_shared<ShaderCache>();
+
+    std::string last_error;
+    ShaderCompileStats stats;
 };
 
 ShaderManager::ShaderManager() : pImpl(std::make_unique<Impl>()) {}
@@ -85,23 +110,170 @@ uint64_t ShaderManager::createShader(ShaderStage stage, const std::vector<uint32
     return handle;
 }
 
-uint64_t ShaderManager::createShaderFromGLSL(ShaderStage stage, const std::string& glsl_source, const std::string& entry_point, const std::vector<std::string>& defines) {
-    std::lock_guard<std::mutex> lock(pImpl->mutex);
-    // In a real implementation, this would use glslang to compile GLSL to SPIR-V
-    // For now, return a placeholder
-    uint64_t handle = pImpl->next_shader_handle++;
+bool ShaderManager::translateGlslToSpirv(ShaderStage stage, const std::string& glsl_source,
+                                          const std::string& entry_point,
+                                          const std::vector<std::string>& defines,
+                                          std::vector<uint32_t>* spirv_out,
+                                          std::string* error_out) {
+    // Rejected before the compiler is invoked, so an unsupported stage produces
+    // "this backend does not support a mesh shader" rather than a parse error
+    // about something that is not the author's fault.
+    if (!isShaderStageSupported(stage)) {
+        if (error_out != nullptr) {
+            *error_out = std::string("the Vulkan backend does not support a ") +
+                         shaderStageName(stage) + " shader";
+        }
+        return false;
+    }
 
-    Impl::Shader shader;
-    shader.handle = handle;
-    shader.stage = stage;
-    shader.entry_point = entry_point;
+    ShaderTranslator* translator = shaderTranslator();
+    if (translator == nullptr || !translator->available()) {
+        if (error_out != nullptr) {
+            *error_out =
+                "no GLSL to SPIR-V compiler is linked into this build, so the Vulkan backend "
+                "cannot accept GLSL source";
+        }
+        return false;
+    }
 
-    if (!onCreateShaderFromGLSL(handle, stage, glsl_source, entry_point, defines)) {
+    // One key for the whole operation: the lookup and the store must agree, and
+    // building it twice invites a mismatch that would silently never hit.
+    const std::string cache_key =
+        ShaderCache::buildKey(stage, glsl_source, defines, kShaderCacheTargetApi,
+                              toolchain_version(translator));
+
+    {
+        // A cached hit is the common case once a shader has been seen once, and
+        // it costs no compilation at all. The cache is internally synchronised,
+        // so only the stats update needs this lock.
+        std::vector<uint32_t> cached;
+        if (pImpl->spirv_cache->lookup(cache_key, &cached)) {
+            std::lock_guard<std::mutex> lock(pImpl->mutex);
+            ++pImpl->stats.memory_hits;
+            *spirv_out = std::move(cached);
+            return true;
+        }
+    }
+
+    TranslationRequest request;
+    request.stage = stage;
+    request.source = glsl_source;
+    request.entry_point = entry_point;
+    request.defines = defines;
+    request.target_api = kShaderCacheTargetApi;
+
+    const TranslationResult result = translator->translate(request);
+
+    {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        pImpl->stats.total_ms += result.compile_ms;
+        if (!result.success) {
+            ++pImpl->stats.failures;
+            pImpl->last_error = result.error;
+            if (error_out != nullptr) {
+                *error_out = result.error;
+            }
+            return false;
+        }
+        ++pImpl->stats.compiled;
+    }
+
+    *spirv_out = result.spirv;
+
+    // Storing is best effort: a cache that cannot be written must not fail a
+    // shader that compiled correctly. The next process pays for the miss.
+    pImpl->spirv_cache->store(cache_key, stage, *spirv_out);
+    return true;
+}
+
+uint32_t ShaderManager::toolchain_version(ShaderTranslator* translator) {
+    // FNV-1a over the compiler identity, truncated to 32 bits. Stable across
+    // processes and platforms, unlike std::hash.
+    const std::string id = translator != nullptr ? translator->toolchainId() : std::string("none");
+    uint32_t hash = 2166136261u;
+    for (const char character : id) {
+        hash ^= static_cast<uint8_t>(character);
+        hash *= 16777619u;
+    }
+    return hash == 0 ? 1u : hash;
+}
+
+uint64_t ShaderManager::createShaderFromGLSL(ShaderStage stage, const std::string& glsl_source,
+                                             const std::string& entry_point,
+                                             const std::vector<std::string>& defines) {
+    if (glsl_source.empty()) {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        pImpl->last_error = "createShaderFromGLSL was given an empty source";
         return 0;
     }
 
+    uint64_t handle = 0;
+    {
+        // The handle is reserved under the lock and the work is done outside it.
+        // A compile can take hundreds of milliseconds; holding this mutex across
+        // it would stall every other shader operation, including destroy.
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        handle = pImpl->next_shader_handle++;
+        pImpl->last_error.clear();
+    }
+
+    if (compilesGlslNatively()) {
+        // OpenGL ES: hand the source to the driver's own GLSL compiler.
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        if (!onCreateShaderFromGLSL(handle, stage, glsl_source, entry_point, defines)) {
+            return 0;
+        }
+        Impl::Shader shader;
+        shader.handle = handle;
+        shader.stage = stage;
+        shader.entry_point = entry_point;
+        pImpl->shaders[handle] = std::move(shader);
+        return handle;
+    }
+
+    // Vulkan: GLSL is not a Vulkan dialect, so it has to become SPIR-V first.
+    std::vector<uint32_t> spirv;
+    std::string error;
+    if (!translateGlslToSpirv(stage, glsl_source, entry_point, defines, &spirv, &error)) {
+        LOGE("GLSL -> SPIR-V failed for a %s shader: %s", shaderStageName(stage), error.c_str());
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        pImpl->last_error = error;
+        return 0;
+    }
+
+    if (!onCreateShader(handle, stage, spirv, entry_point)) {
+        std::lock_guard<std::mutex> lock(pImpl->mutex);
+        pImpl->last_error = "the backend refused the compiled SPIR-V";
+        return 0;
+    }
+
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    Impl::Shader shader;
+    shader.handle = handle;
+    shader.stage = stage;
+    shader.spirv = std::move(spirv);
+    shader.entry_point = entry_point;
     pImpl->shaders[handle] = std::move(shader);
+    LOGI("compiled a %s shader from GLSL: %zu SPIR-V words", shaderStageName(stage),
+         pImpl->shaders[handle].spirv.size());
     return handle;
+}
+
+void ShaderManager::openShaderCache(const std::string& directory) {
+    // Deliberately not under pImpl->mutex: open() touches the filesystem. The
+    // cache is internally synchronised, and a lookup racing this simply misses
+    // until the directory exists.
+    pImpl->spirv_cache->open(directory);
+}
+
+const std::string& ShaderManager::lastShaderError() const {
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    return pImpl->last_error;
+}
+
+ShaderManager::ShaderCompileStats ShaderManager::shaderCompileStats() const {
+    std::lock_guard<std::mutex> lock(pImpl->mutex);
+    return pImpl->stats;
 }
 
 void ShaderManager::destroyShader(uint64_t handle) {
@@ -256,8 +428,9 @@ void ShaderManager::addSpecializationConstant(uint64_t shader_handle, const std:
 }
 
 void ShaderManager::compileAsync(const std::string& key, ShaderStage stage, const std::string& source, std::function<void(uint64_t)> callback) {
-    // Compilation currently runs inline. Callers must treat this as blocking:
-    // a background pool is wired up with the real shader translation backend.
+    // Runs inline. Deliberate: compilation reaches into this manager's handle
+    // space and its cache, so it has to happen where those are valid. The cache
+    // is what keeps the repeat case cheap.
     const uint64_t handle = getOrCreateShader(
         key, [this, stage, &source]() { return createShaderFromGLSL(stage, source, "main", {}); });
     if (callback) {

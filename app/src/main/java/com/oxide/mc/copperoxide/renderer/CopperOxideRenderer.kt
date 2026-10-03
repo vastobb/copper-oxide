@@ -550,6 +550,63 @@ open class CopperOxideRenderer(
     fun resetFrameStats() = nativeResetFrameStats(ownerTag)
 
     /**
+     * Why the most recent shader compilation failed, or an empty string when it
+     * succeeded.
+     *
+     * [createShader] reports failure by returning an invalid handle, which on its
+     * own cannot distinguish "the compiler rejected this source" from "no
+     * compiler is linked into this build" from "the backend refused the module".
+     * This is what a caller logs or shows a user.
+     */
+    fun lastShaderError(): String = nativeLastShaderError(ownerTag)
+
+    /**
+     * Compilation and cache counters.
+     *
+     * `compiled` counts full GLSL to SPIR-V compilations and `memoryHits` counts
+     * shaders served from the cache. Comparing them is how a caller tells a
+     * working cache from an absent one.
+     */
+    fun shaderCompileStats(): ShaderCompileStats {
+        val values = nativeShaderCompileStats(ownerTag)
+        return ShaderCompileStats(
+            compiled = values[0],
+            memoryHits = values[1],
+            diskHits = values[2],
+            failures = values[3],
+            totalMs = values[4],
+        )
+    }
+
+    /** Opens the on-disk SPIR-V cache under [directory]. */
+    fun openShaderCache(directory: String) = nativeOpenShaderCache(ownerTag, directory)
+
+    /**
+     * Points `#include` resolution at a directory on disk, typically a game
+     * install's shader directory.
+     *
+     * Minecraft writes its includes as `#include <minecraft:fog.glsl>`, where
+     * `minecraft:` is a URI scheme rather than a folder, so the scheme is
+     * stripped and the rest resolved under [root]. A `..` segment is refused: a
+     * shader has no legitimate reason to read outside its own asset tree.
+     *
+     * A file is included at most once per translation unit, so ordinary include
+     * guards work and a cycle terminates instead of recursing.
+     *
+     * Pass an empty string to remove the resolver, after which any include is
+     * reported as unresolvable rather than being silently dropped.
+     */
+    fun setShaderIncludeRoot(root: String) = nativeSetShaderIncludeRoot(root)
+
+    external private fun nativeLastShaderError(ownerTag: Long): String
+
+    external private fun nativeShaderCompileStats(ownerTag: Long): LongArray
+
+    external private fun nativeOpenShaderCache(ownerTag: Long, directory: String)
+
+    external private fun nativeSetShaderIncludeRoot(root: String)
+
+    /**
      * Opaque handle to a GPU resource. Zero means the resource could not be
      * created; every method below treats zero as a no-op instead of crashing.
      */
@@ -956,6 +1013,19 @@ data class GpuInfo(
 /**
  * Frame statistics
  */
+/**
+ * Shader compilation and cache counters.
+ *
+ * See [CopperOxideRenderer.shaderCompileStats].
+ */
+data class ShaderCompileStats(
+    val compiled: Long = 0,
+    val memoryHits: Long = 0,
+    val diskHits: Long = 0,
+    val failures: Long = 0,
+    val totalMs: Long = 0,
+)
+
 data class FrameStats(
     val frameNumber: Long,
     val frameTimeMs: Double,

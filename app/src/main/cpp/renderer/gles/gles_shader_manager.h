@@ -66,6 +66,12 @@ public:
     size_t get_live_program_count() const;
 
 protected:
+    // OpenGL ES compiles GLSL itself. Running the source through a
+    // GLSL -> SPIR-V -> ESSL round trip first would be a long way to change the
+    // shader the driver sees and would put a compiler on the GLES path for no
+    // gain.
+    bool compilesGlslNatively() const override { return true; }
+
     bool onCreateShader(uint64_t handle, ShaderStage stage, const std::vector<uint32_t>& spirv,
                         const std::string& entry_point) override;
     bool onCreateShaderFromGLSL(uint64_t handle, ShaderStage stage, const std::string& glsl_source,

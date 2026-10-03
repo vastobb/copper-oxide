@@ -6,6 +6,7 @@
 #include "buffer_manager.h"
 #include "texture_manager.h"
 #include "shader_manager.h"
+#include "shader_translator.h"
 #include "state_manager.h"
 #include "command_buffer.h"
 
@@ -14,6 +15,9 @@
 #include <android/native_window_jni.h>
 #include <android/log.h>
 #include <array>
+#include <cctype>
+#include <fstream>
+#include <iterator>
 #include <unordered_map>
 #include <vector>
 #include <mutex>
@@ -845,5 +849,125 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeResetFrameStats
         profiler->reset();
     }
 }
+
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeLastShaderError(
+    JNIEnv* env, jobject thiz, jlong owner
+) {
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
+    const std::string error = renderer != nullptr ? renderer->lastShaderError() : std::string();
+    return env->NewStringUTF(error.c_str());
+}
+
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeShaderCompileStats(
+    JNIEnv* env, jobject thiz, jlong owner
+) {
+    jlong values[5] = {0, 0, 0, 0, 0};
+    if (RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner))) {
+        if (ShaderManager* shaders = renderer->getShaderManager()) {
+            const ShaderManager::ShaderCompileStats stats = shaders->shaderCompileStats();
+            values[0] = static_cast<jlong>(stats.compiled);
+            values[1] = static_cast<jlong>(stats.memory_hits);
+            values[2] = static_cast<jlong>(stats.disk_hits);
+            values[3] = static_cast<jlong>(stats.failures);
+            values[4] = static_cast<jlong>(stats.total_ms);
+        }
+    }
+    jlongArray result = env->NewLongArray(5);
+    if (result != nullptr) {
+        env->SetLongArrayRegion(result, 0, 5, values);
+    }
+    return result;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeOpenShaderCache(
+    JNIEnv* env, jobject thiz, jlong owner, jstring directory
+) {
+    RendererBase* renderer = renderer_for_owner(static_cast<uint64_t>(owner));
+    if (renderer == nullptr || directory == nullptr) {
+        return;
+    }
+    if (ShaderManager* shaders = renderer->getShaderManager()) {
+        const char* path = env->GetStringUTFChars(directory, nullptr);
+        if (path != nullptr) {
+            shaders->openShaderCache(path);
+            env->ReleaseStringUTFChars(directory, path);
+        }
+    }
+}
+
+
+
+// Maps an include name to a file inside a directory, rooted at a game install.
+//
+// Minecraft's own scheme is `#include <minecraft:fog.glsl>`, where `minecraft:`
+// is a URI scheme, not a directory. A filesystem cannot answer that, so the
+// scheme is stripped and the remainder resolved under the root. `../` is
+// rejected: a shader reaching outside its own asset root has no legitimate
+// reason, and allowing it would let a resource pack read arbitrary files from
+// the device.
+//
+// Returns false for anything it will not serve, which the caller reports as an
+// unresolved include rather than compiling a shader with it silently dropped.
+static bool resolve_include_from_root(const std::string& root, const std::string& name,
+                                      std::string* text) {
+    if (root.empty() || name.empty()) {
+        return false;
+    }
+    std::string relative = name;
+    const size_t scheme_end = relative.find(':');
+    if (scheme_end != std::string::npos && scheme_end + 1 < relative.size()) {
+        // Only a scheme-like prefix is stripped, and only once, so a Windows-style
+        // drive letter or a nested path is left alone.
+        const std::string scheme = relative.substr(0, scheme_end);
+        const bool looks_like_scheme =
+            !scheme.empty() &&
+            (std::isalpha(static_cast<unsigned char>(scheme.front())) != 0);
+        if (looks_like_scheme) {
+            relative = relative.substr(scheme_end + 1);
+        }
+    }
+    if (relative.empty() || relative.front() == '/' || relative.find("..") != std::string::npos) {
+        return false;
+    }
+
+    const std::string path = root + "/" + relative;
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+    text->assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    return true;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeSetShaderIncludeRoot(
+    JNIEnv* env, jobject thiz, jstring root
+) {
+    if (root == nullptr) {
+        setShaderIncludeResolver(ShaderIncludeResolver());
+        return;
+    }
+    const char* path = env->GetStringUTFChars(root, nullptr);
+    if (path == nullptr) {
+        return;
+    }
+    // Captured by value: the directory belongs to this app and outlives any
+    // compile, but copying it means the resolver never reads a freed jstring.
+    const std::string root_path(path);
+    env->ReleaseStringUTFChars(root, path);
+    if (root_path.empty()) {
+        setShaderIncludeResolver(ShaderIncludeResolver());
+        return;
+    }
+    setShaderIncludeResolver(
+        [root_path](const std::string& name, std::string* text) {
+            return resolve_include_from_root(root_path, name, text);
+        });
+}
+
 
 } // namespace copper

@@ -497,30 +497,18 @@ bool VulkanShaderManager::onCreateShader(uint64_t handle, ShaderStage stage,
     return true;
 }
 
-bool VulkanShaderManager::onCreateShaderFromGLSL(uint64_t handle, ShaderStage /*stage*/,
-                                                 const std::string& glsl_source,
-                                                 const std::string& entry_point,
-                                                 const std::vector<std::string>& defines) {
-    // Honest failure: no GLSL -> SPIR-V translation backend (glslang, shaderc,
-    // SPIRV-Tools) is linked into this build path, so there is no SPIR-V to
-    // hand to vkCreateShaderModule. Returning a fake module would produce a
-    // pipeline that fails later (or, worse, silently draws nothing).
-    //
-    // When the backend lands this is a one-line addition:
-    //     glslang::TShader shader;
-    //     shader.setStrings(&glsl_source, 1);   // + one string per define
-    //     shader.setEnvInput(...); shader.setEnvClient(...);
-    //     shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShLangVertex);
-    //     if (!shader.parse()) { LOGE(shader.getInfoLog()); return false; }
-    //     glslang::TProgram program; program.addShader(&shader); program.link();
-    //     glslang::GlslangToSpv(*program.getIntermediate(stage), spirv_words);
-    // ... followed by a call into onCreateShader()'s body (vkCreateShaderModule)
-    // with `spirv_words`.
-    LOGE("createShaderFromGLSL(%llu, entry=%s, %zu bytes, %zu defines) failed: GLSL source "
-         "requires the shader translation backend, which is not available on this build path",
-         static_cast<unsigned long long>(handle),
-         entry_point.empty() ? "main" : entry_point.c_str(),
-         glsl_source.size(), defines.size());
+bool VulkanShaderManager::onCreateShaderFromGLSL(uint64_t /*handle*/, ShaderStage /*stage*/,
+                                                 const std::string& /*glsl_source*/,
+                                                 const std::string& /*entry_point*/,
+                                                 const std::vector<std::string>& /*defines*/) {
+    // Reached only if a caller invokes this hook directly. The normal path does
+    // not: ShaderManager::createShaderFromGLSL asks compilesGlslNatively(), gets
+    // false from Vulkan, compiles GLSL to SPIR-V itself, and then calls
+    // onCreateShader with the words - which is what makes vkCreateShaderModule
+    // work. The hook exists because the base declares it pure virtual, so it has
+    // to say something honest rather than pretend.
+    LOGW("VulkanShaderManager does not compile GLSL: ShaderManager does the translation. "
+         "Call ShaderManager::createShaderFromGLSL instead of reaching for this hook.");
     return false;
 }
 
