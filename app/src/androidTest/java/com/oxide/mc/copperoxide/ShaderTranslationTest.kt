@@ -261,7 +261,9 @@ class ShaderTranslationTest {
         )
 
         assertFalse(result.succeeded)
-        assertTrue("expected a line-annotated diagnostic, got \"${result.error}\"", result.error.contains(":"))
+        // The number is read out of the message, not out of a separate field,
+        // because the message is what a human reads. A caller who has to call a
+        // second API to learn which line failed has already lost.
         val reported = LINE.findAll(result.error)
             .map { it.groupValues[1].toInt() }
             .firstOrNull()
@@ -496,7 +498,7 @@ class ShaderTranslationTest {
             layout(set = 0, binding = 1) uniform sampler2D sampler0;
 
             layout(location = 0) in vec2 v_uv;
-            layout(location = 0) in float v_fog;
+            layout(location = 1) in float v_fog;
             layout(location = 0) out vec4 frag_color;
 
             void main() {
@@ -525,8 +527,11 @@ class ShaderTranslationTest {
             layout(location = 2) in vec2 a_texcoord;
             layout(location = 3) in float a_fog;
 
+            // Distinct locations within a stage, and location 0 reused between
+            // this stage's inputs and its outputs - which is legal only under
+            // separate shader objects, and is exactly what Copper Oxide enables.
             layout(location = 0) out vec2 v_uv;
-            layout(location = 0) out float v_fog;
+            layout(location = 1) out float v_fog;
 
             void main() {
                 v_uv = a_texcoord * (globals.screen_size.y * 0.00390625);

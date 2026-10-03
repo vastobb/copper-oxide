@@ -107,13 +107,18 @@ std::string render_define(const std::string& define) {
         return define;
     }
     const size_t equals = define.find('=');
-    // Only a simple object-like macro is rewritten. A function-like macro
-    // "F(x)=x" must keep its parameter list attached to its name, so the first
-    // '=' is only a separator when no '(' precedes it.
-    if (equals == std::string::npos || define.find('(') < equals) {
+    // Only a simple object-like macro is rewritten. A function-like macro such
+    // as "F(x)=x" must keep its parameter list attached to its name, so the first
+    // '=' is only a name/body separator when no '(' precedes it.
+    const bool object_like = equals != std::string::npos &&
+                             define.find('(') == std::string::npos;
+    if (!object_like) {
         return "#define " + define;
     }
-    return "#define " + define;
+    // "A=1" -> "#define A 1". The two spellings mean the same thing to the
+    // preprocessor, but only one of them is free of a warning nobody can act
+    // on.
+    return "#define " + define.substr(0, equals) + " " + define.substr(equals + 1);
 }
 
 /// Insert the preamble, the defines and the one extension Vulkan GLSL needs,
@@ -252,7 +257,10 @@ void strip_version_directive(std::string* text) {
 /// gives the same result as a guard while also terminating cycles.
 class IncludeSplicer {
 public:
-    explicit IncludeSplicer(const ShaderIncludeResolver& resolver) : resolver_(resolver) {}
+    // By value, not by const reference: the resolver arrives from a function
+    // that returns one, so a reference member would dangle the moment the
+    // constructor's argument was destroyed.
+    explicit IncludeSplicer(ShaderIncludeResolver resolver) : resolver_(std::move(resolver)) {}
 
     /// Returns false and fills `error` when an include cannot be resolved.
     bool resolve(const std::string& source, std::string* out, std::string* error) {
@@ -327,6 +335,14 @@ private:
             return false;
         }
         cursor += kDirective.size();
+        // Whitespace between the directive and the header name is legal and is
+        // what everyone actually writes. Not skipping it made every include look
+        // unrecognised, so it was passed through to the compiler, which then
+        // rejected it with "unexpected include directive" - a failure that pointed
+        // at the compiler instead of at the parser.
+        while (cursor < line.size() && (line[cursor] == ' ' || line[cursor] == '\t')) {
+            ++cursor;
+        }
         if (cursor >= line.size()) {
             return false;
         }
@@ -343,9 +359,56 @@ private:
         return !name->empty();
     }
 
-    const ShaderIncludeResolver& resolver_;
+    ShaderIncludeResolver resolver_;
 };
 
+
+/// Rewrite glslang's line numbers into the caller's frame.
+///
+/// The compiler sees the caller's source with a block of directives injected
+/// after `#version`, so every line it names is shifted. Reporting those numbers
+/// unchanged would point an author at lines that do not exist in the file they
+/// wrote, which is worse than reporting nothing.
+///
+/// Lines are 1-based and the injection always sits after line 1, so line 1 is
+/// the only one whose number is unchanged.
+std::string adjust_diagnostic_lines(const std::string& text, const std::string& file_name,
+                                    int injected) {
+    if (injected <= 0 || file_name.empty()) {
+        return text;
+    }
+    std::string out;
+    out.reserve(text.size());
+    size_t cursor = 0;
+    while (cursor < text.size()) {
+        const size_t hit = text.find(file_name + ":", cursor);
+        if (hit == std::string::npos) {
+            out.append(text, cursor, std::string::npos);
+            break;
+        }
+        out.append(text, cursor, hit - cursor);
+        size_t digits = hit + file_name.size() + 1;
+        int line = 0;
+        bool any_digit = false;
+        while (digits < text.size() && text[digits] >= '0' && text[digits] <= '9') {
+            line = line * 10 + (text[digits] - '0');
+            ++digits;
+            any_digit = true;
+        }
+        const bool is_line = any_digit && digits < text.size() && text[digits] == ':';
+        if (!is_line) {
+            // Not a "name:line:" reference; copy the file_name through verbatim.
+            out.append(file_name);
+            cursor = hit + file_name.size();
+            continue;
+        }
+        out.append(file_name);
+        out.push_back(':');
+        out += std::to_string(line > 1 ? line - injected : 1);
+        cursor = digits;
+    }
+    return out;
+}
 
 class ShadercTranslator : public ShaderTranslator {
 public:
@@ -432,6 +495,7 @@ public:
             build_source_with_defines(preprocessed, request.defines, request.preamble);
 
         std::string diagnostics;
+        std::string input_file_name;
         std::vector<uint32_t> spirv;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -465,10 +529,15 @@ public:
             // and running one on the device costs startup time for nothing.
             options.SetOptimizationLevel(shaderc_optimization_level_zero);
 
-            const std::string file_name =
-                request.debug_name.empty() ? std::string("shader") : request.debug_name;
+            // Named after the stage so a diagnostic says which stage failed.
+            // "shader:3: error:" leaves a reader guessing; "fragment.glsl:3:
+            // error:" does not. debug_name, when given, is the better label and
+            // wins.
+            input_file_name = request.debug_name.empty()
+                                  ? std::string(shaderStageName(request.stage)) + ".glsl"
+                                  : request.debug_name;
             const shaderc::SpvCompilationResult compiled = compiler_->CompileGlslToSpv(
-                source, to_shaderc_kind(request.stage), file_name.c_str(),
+                source, to_shaderc_kind(request.stage), input_file_name.c_str(),
                 request.entry_point.empty() ? "main" : request.entry_point.c_str(), options);
 
             if (compiled.GetCompilationStatus() != shaderc_compilation_status_success) {
@@ -494,7 +563,9 @@ public:
             // glslang counted the injected lines; take them back out so the
             // number indexes the source the caller wrote.
             result.error_line = reported >= 0 ? reported - injected : -1;
-            result.error = diagnostics;
+            // And rewrite the numbers inside the message, because that text is
+            // what a human actually reads.
+            result.error = adjust_diagnostic_lines(diagnostics, input_file_name, injected);
             LOGE("%s shader compilation failed: %s", shaderStageName(request.stage),
                  diagnostics.c_str());
             return result;
@@ -539,22 +610,30 @@ public:
         }
 
 #ifdef COPPER_HAVE_SPIRV_TOOLS
-        // This SPIRV-Tools revision exposes Validate(binary, size) with no
-        // message out-parameter - that overload arrived later - so a rejection
-        // cannot be quoted verbatim. The module is still refused, and the
-        // diagnostic says enough to act on: how many words were rejected and
-        // which SPIR-V version they claimed.
+        // Validate(binary, size) reports only a bool in this SPIRV-Tools
+        // revision. The text it would otherwise print goes to a message
+        // consumer, which is installed here so a rejection can say WHY. A
+        // validator that can only say "no" is a validator nobody can act on.
         spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_0);
+        std::string message;
+        tools.SetMessageConsumer(
+            [&message](spv_message_level_t level, const char* /*source*/,
+                       const spv_position_t& position, const char* text) {
+                if (level == spv_message_level_error || message.empty()) {
+                    message = "line " + std::to_string(position.line) + ": " +
+                              (text != nullptr ? text : "unspecified validation failure");
+                }
+            });
         const bool ok = tools.Validate(spirv.data(), spirv.size());
         result.success = ok;
         result.validated = true;
         if (!ok) {
-            const uint32_t spirv_version = spirv[1] & 0x00ffffffu;
-            result.error = "spirv-val rejected a " + std::to_string(spirv.size()) +
-                           "-word module claiming SPIR-V " + std::to_string(spirv_version >> 16) +
-                           "." + std::to_string(spirv_version >> 8) + "." +
-                           std::to_string(spirv_version & 0xffu) +
-                           " against Vulkan 1.0";
+            // Word 1 of a SPIR-V module packs the version in its high 16 bits.
+            const uint32_t spirv_version = spirv[1] >> 16;
+            result.error = "spirv-val rejected this " + std::to_string(spirv.size()) +
+                           "-word module (SPIR-V " + std::to_string((spirv_version >> 8) & 0xff) +
+                           "." + std::to_string(spirv_version & 0xff) + ") against Vulkan 1.0: " +
+                           (message.empty() ? std::string("no further detail") : message);
         }
         return result;
 #else
