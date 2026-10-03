@@ -355,44 +355,6 @@ public:
 #endif
     }
 
-    void initialize() override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (compiler_ != nullptr) {
-            return;
-        }
-        compiler_ = shaderc_compiler_initialize();
-        options_ = shaderc_compile_options_initialize();
-        if (compiler_ == nullptr || options_ == nullptr) {
-            LOGE("shaderc failed to initialise; the Vulkan backend cannot accept GLSL");
-            if (compiler_ != nullptr) {
-                shaderc_compiler_release(compiler_);
-                compiler_ = nullptr;
-            }
-            if (options_ != nullptr) {
-                shaderc_compile_options_release(options_);
-                options_ = nullptr;
-            }
-            return;
-        }
-
-        shaderc_compile_options_set_source_language(options_, shaderc_source_language_glsl);
-        shaderc_compile_options_set_target_env(options_, shaderc_target_env_vulkan, kTargetEnv);
-        shaderc_compile_options_set_target_spv(options_, kTargetSpv);
-        // WHY on: plain GLSL carries no descriptor bindings and Vulkan requires
-        // one per resource. Without this, a Minecraft-style shader declaring
-        // `uniform sampler2D tex` compiles and then fails at pipeline creation
-        // with nothing to point at.
-        shaderc_compile_options_set_auto_bind_uniforms(options_, true);
-        // WHY off: Copper Oxide bakes vertex attribute locations 0 and 1 into its
-        // pipeline. Auto-assignment would hand out whatever location glslang
-        // chose and silently mismatch the vertex layout, which is worse than a
-        // link error telling the author to write layout(location=).
-        shaderc_compile_options_set_auto_map_locations(options_, false);
-        // No optimisation pass here: the driver optimises at pipeline creation,
-        // and running one on the device costs startup time for nothing.
-        shaderc_compile_options_set_optimization_level(options_, shaderc_optimization_level_zero);
-        shaderc_compile_options_set_generate_debug_info(options_, false);
-    }
 
     TranslationResult translate(const TranslationRequest& request) override {
         TranslationResult result;

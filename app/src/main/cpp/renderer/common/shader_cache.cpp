@@ -1148,7 +1148,11 @@ void guarded_void(const char* what, Fn&& body) noexcept {
     }
 }
 
-template <typename Fn, typename Result>
+// Result first, so a caller can name the return type - guarded_value<uint64_t>(...)
+// - while Fn is still deduced from the lambda. With the parameters the other way
+// round the explicit argument binds to Fn and every such call fails to
+// instantiate.
+template <typename Result, typename Fn>
 Result guarded_value(const char* what, Fn&& body) noexcept {
     try {
         return body();
