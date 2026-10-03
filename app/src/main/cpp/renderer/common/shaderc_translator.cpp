@@ -615,13 +615,23 @@ public:
         // consumer, which is installed here so a rejection can say WHY. A
         // validator that can only say "no" is a validator nobody can act on.
         spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_0);
-        std::string message;
+        std::string first_error;
+        std::string first_message;
+        // The message level is spv_message_level_t, whose values are SPV_MSG_*.
         tools.SetMessageConsumer(
-            [&message](spv_message_level_t level, const char* /*source*/,
-                       const spv_position_t& position, const char* text) {
-                if (level == spv_message_level_error || message.empty()) {
-                    message = "line " + std::to_string(position.line) + ": " +
-                              (text != nullptr ? text : "unspecified validation failure");
+            [&](spv_message_level_t level, const char* /*source*/, const spv_position_t& position,
+                const char* text) {
+                const std::string rendered =
+                    "line " + std::to_string(position.line) + ": " +
+                    (text != nullptr ? text : "unspecified validation failure");
+                if (first_message.empty()) {
+                    first_message = rendered;
+                }
+                // The FIRST error, not the last: a validator reports cascading
+                // failures and the earliest one is the real cause, the rest are
+                // its consequences.
+                if (first_error.empty() && level == SPV_MSG_ERROR) {
+                    first_error = rendered;
                 }
             });
         const bool ok = tools.Validate(spirv.data(), spirv.size());
@@ -630,10 +640,12 @@ public:
         if (!ok) {
             // Word 1 of a SPIR-V module packs the version in its high 16 bits.
             const uint32_t spirv_version = spirv[1] >> 16;
+            std::string detail = !first_error.empty() ? first_error : first_message;
             result.error = "spirv-val rejected this " + std::to_string(spirv.size()) +
                            "-word module (SPIR-V " + std::to_string((spirv_version >> 8) & 0xff) +
-                           "." + std::to_string(spirv_version & 0xff) + ") against Vulkan 1.0: " +
-                           (message.empty() ? std::string("no further detail") : message);
+                           "." + std::to_string(spirv_version & 0xff) + ") against Vulkan 1.0" +
+                           (detail.empty() ? std::string()
+                                            : ": " + detail);
         }
         return result;
 #else
