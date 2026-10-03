@@ -213,7 +213,19 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeShutdown(
     JNIEnv* env, jobject thiz
 ) {
     LOGI("nativeShutdown");
-    setRenderer(nullptr);
+    // Take the renderer out of the global slot first so no other thread can
+    // pick it up mid-teardown, then shut it down properly. Dropping the
+    // unique_ptr without calling shutdown() destroys the C++ object while its
+    // device, swapchain and EGL context are still live, which leaks all of them
+    // and leaves the render thread's context current to a destroyed surface.
+    std::unique_ptr<RendererBase> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_renderer_mutex);
+        renderer = std::move(g_renderer);
+    }
+    if (renderer) {
+        renderer->shutdown();
+    }
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

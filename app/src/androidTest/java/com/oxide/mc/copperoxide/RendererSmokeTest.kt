@@ -5,6 +5,7 @@ import android.view.Surface
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.oxide.mc.copperoxide.renderer.CopperOxideRenderer
+import com.oxide.mc.copperoxide.renderer.FrameStats
 import com.oxide.mc.copperoxide.renderer.RendererBackend
 import com.oxide.mc.copperoxide.renderer.RendererConfig
 import com.oxide.mc.copperoxide.renderer.RendererFeature
@@ -111,7 +112,11 @@ class RendererSmokeTest {
         )
 
         val rendered = CountDownLatch(3)
+        // Measure the stats the renderer emitted with the frame, not a fresh
+        // read afterwards: these are the numbers a caller would act on.
+        var observed: FrameStats? = null
         instance.setFrameCallback {
+            observed = it
             rendered.countDown()
         }
 
@@ -121,9 +126,12 @@ class RendererSmokeTest {
             rendered.await(10, TimeUnit.SECONDS),
         )
 
-        val stats = instance.getFrameStats()
-        assertTrue(stats.frameTimeMs > 0.0)
-        assertTrue(stats.drawCalls >= 0)
+        val stats = requireNotNull(observed)
+        assertTrue(
+            "the frame time the renderer reported was ${stats.frameTimeMs} ms",
+            stats.frameTimeMs > 0.0,
+        )
+        assertTrue("the draw call count was ${stats.drawCalls}", stats.drawCalls >= 0)
     }
 
     // -----------------------------------------------------------------------
@@ -374,29 +382,34 @@ class RendererSmokeTest {
             instance.initialize(requireNotNull(surface)),
         )
 
+        // Reads the frame number the renderer reported with a frame, so this
+        // measures the renderer rather than a re-read that could race a teardown.
+        var lastFrameNumber = 0L
         fun renderFrames(count: Int) {
             val latch = CountDownLatch(count)
-            instance.setFrameCallback { latch.countDown() }
+            instance.setFrameCallback {
+                lastFrameNumber = it.frameNumber
+                latch.countDown()
+            }
             assertTrue(
                 "only part of $count frames rendered",
                 latch.await(15, TimeUnit.SECONDS),
             )
         }
 
-        val firstFrameNumber = instance.getFrameStats().frameNumber
         renderFrames(5)
-        val afterFive = instance.getFrameStats().frameNumber
+        val afterFive = lastFrameNumber
         assertTrue(
-            "frame counter must advance across frames (was $firstFrameNumber, now $afterFive)",
-            afterFive > firstFrameNumber,
+            "the frame counter must advance across frames, last seen $afterFive",
+            afterFive > 0,
         )
 
         // Three more without touching anything: a latched frame state shows up
         // here, because the second beginFrame() would be rejected.
         renderFrames(3)
         assertTrue(
-            "frame counter must keep advancing",
-            instance.getFrameStats().frameNumber > afterFive,
+            "the frame counter must keep advancing, last seen $lastFrameNumber",
+            lastFrameNumber > afterFive,
         )
 
         // Resize. On Vulkan this rebuilds the swapchain; on GLES it re-creates
@@ -404,8 +417,8 @@ class RendererSmokeTest {
         instance.onSurfaceChanged(320, 240)
         renderFrames(5)
         assertTrue(
-            "rendering must continue after a resize",
-            instance.getFrameStats().frameNumber > afterFive,
+            "rendering must continue after a resize, last seen $lastFrameNumber",
+            lastFrameNumber > afterFive,
         )
 
         instance.onSurfaceChanged(64, 64)
