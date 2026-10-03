@@ -44,24 +44,49 @@ FetchContent_MakeAvailable(vma)
 # ---------------------------------------------------------------------------
 # Shader toolchain: shaderc (GLSL -> SPIR-V) plus SPIRV-Tools (spirv-val)
 #
-# shaderc is Khronos/Google's packaging of glslang + SPIRV-Tools + SPIRV-Headers
-# behind one stable API. Composing those three by hand means resolving who owns
-# SPIRV-Headers, in exactly one order, which is the part that goes wrong;
-# shaderc's own CMake already resolved it. Everything is static, so the compiler
-# ends up inside libcopper-oxide.so instead of adding .so files to the APK.
+# Vulkan has no GLSL dialect: a Vulkan shader module is a SPIR-V binary. shaderc
+# is Khronos/Google's packaging of glslang + SPIRV-Tools + SPIRV-Headers behind
+# one stable API. Everything is static, so the compiler ends up inside
+# libcopper-oxide.so instead of adding .so files to the APK.
 #
-# WHY GIT_REPOSITORY and not a URL tarball: shaderc's third_party/CMakeLists.txt
-# builds SPIRV-Tools and glslang only from `third_party/` subdirectories, and
-# aborts with "SPIRV-Tools was not found - required for compilation" otherwise. A
-# GitHub source tarball does not contain submodules, so the tarball cannot
-# build. FetchContent therefore clones the three submodules we actually need.
-# googletest, effcee, re2 and abseil are the test-only dependencies and are
-# deliberately omitted: SHADERC_SKIP_TESTS keeps them from being referenced.
+# WHY THE THREE DEPENDENCIES ARE FETCHED HERE AND NOT BY shaderc ITSELF
+#
+# shaderc v2024.4 has no .gitmodules at all; third_party/ holds only CMake glue
+# that add_subdirectory's SPIRV-Tools and glslang from third_party/<name>. Its
+# own configure therefore aborts with "SPIRV-Tools was not found" unless those
+# directories are already populated - which is what utils/git-sync-deps and
+# DEPS exist to do. Rather than depend on that script, the three projects are
+# fetched here, in the order they depend on each other, and shaderc then reuses
+# the targets that already exist: its glue is guarded by `if (NOT TARGET ...)`
+# for both SPIRV-Tools and glslang, and by `if (IS_DIRECTORY ...)` for the
+# headers, which a plain clone does not have. So exactly one copy of each is
+# built, in one place.
+#
+# Order matters and is load-bearing:
+#   1. SPIRV-Headers first. It is header-only and creates the SPIRV-Headers
+#      INTERFACE target. FetchContent also defines SPIRV-Headers_SOURCE_DIR,
+#      which SPIRV-Tools honours: it uses that directory in preference to its
+#      own submodule and skips adding it again. SPIRV-Tools does not link that
+#      target for its own sources, so the include directory is attached to it
+#      explicitly below - SPIR-V headers are just .h and .hpp files, and an
+#      extra include directory cannot break a target that already had it.
+#   2. SPIRV-Tools second, so its SPIRV-Tools target exists.
+#   3. glslang third. ENABLE_OPT is off, so glslang does not pull in the
+#      optimiser or SPIRV-Tools itself. The same include directory is attached
+#      for the same reason.
+#   4. shaderc last, which finds both targets already defined and adds neither.
+#
+# The revisions are the ones shaderc's own DEPS pins for v2024.4, so the three
+# are exactly the combination Khronos tests together rather than three
+# independently chosen "latest" tags.
 #
 # Licence: Apache-2.0, compatible with this project's MIT licence.
 # See THIRD_PARTY_NOTICES.md.
 # ---------------------------------------------------------------------------
 set(SHADERC_PINNED_TAG "v2024.4" CACHE STRING "shaderc tag; also the SPIR-V cache key version")
+set(SPIRV_HEADERS_REV "3f17b2af6784bfa2c5aa5dbb8e0e74a607dd8b3b" CACHE STRING "From shaderc's DEPS")
+set(SPIRV_TOOLS_REV   "4d2f0b40bfe290dea6c6904dafdf7fd8328ba346" CACHE STRING "From shaderc's DEPS")
+set(GLSLANG_REV       "a0995c49ebcaca2c6d3b03efbabf74f3843decdb" CACHE STRING "From shaderc's DEPS")
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Static only; a shared library would add a .so" FORCE)
 set(SHADERC_SKIP_TESTS ON CACHE BOOL "No gtest in an APK" FORCE)
@@ -74,27 +99,53 @@ set(SHADERC_SKIP_COPYRIGHT_CHECK ON CACHE BOOL "" FORCE)
 set(SHADERC_ENABLE_WERROR_COMPILE OFF CACHE BOOL "" FORCE)
 # glslangValidator and friends are host tools with no place in an APK.
 set(ENABLE_GLSLANG_BINARIES OFF CACHE BOOL "" FORCE)
-# shaderc drives optimisation itself; glslang does not need to carry spirv-opt.
+# shaderc drives optimisation itself; glslang does not need to carry spirv-opt,
+# which also means it does not need SPIRV-Tools.
 set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
+set(BUILD_EXTERNAL OFF CACHE BOOL "glslang's External/ submodules are not populated" FORCE)
 set(ENABLE_PCH OFF CACHE BOOL "A PCH per vendored target is pure cost" FORCE)
 set(GLSLANG_TESTS OFF CACHE BOOL "" FORCE)
 set(SPIRV_SKIP_TESTS ON CACHE BOOL "" FORCE)
-# Skips spirv-val/spirv-opt/spirv-dis executables; the static library still builds.
+# Skips the spirv-val/spirv-opt/spirv-dis executables; the library still builds.
 set(SPIRV_SKIP_EXECUTABLES ON CACHE BOOL "" FORCE)
 
-FetchContent_Declare(
-    shaderc
-    GIT_REPOSITORY https://github.com/google/shaderc.git
-    GIT_TAG ${SHADERC_PINNED_TAG}
-    GIT_SHALLOW TRUE
-    GIT_SUBMODULES third_party/spirv-headers third_party/spirv-tools third_party/glslang
-    # Not recursive: spirv-tools has its own submodules (effcee, re2, abseil,
-    # googletest, jsoncpp) and they are test-only, so cloning them would be pure
-    # configure-time cost on every CI run.
-    GIT_SUBMODULES_RECURSE OFF
-)
-FetchContent_MakeAvailable(shaderc)
+FetchContent_Declare(spirv_headers
+    GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Headers.git
+    GIT_TAG ${SPIRV_HEADERS_REV} GIT_SHALLOW OFF)
+FetchContent_MakeAvailable(spirv_headers)
 
+FetchContent_Declare(spirv_tools
+    GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Tools.git
+    GIT_TAG ${SPIRV_TOOLS_REV} GIT_SHALLOW OFF)
+FetchContent_MakeAvailable(spirv_tools)
+
+FetchContent_Declare(glslang
+    GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
+    GIT_TAG ${GLSLANG_REV} GIT_SHALLOW OFF)
+FetchContent_MakeAvailable(glslang)
+
+# glslang's own CMake puts a SPIR-V headers include directory on its targets
+# only on the ENABLE_OPT branch, because that is the branch where it pulls in
+# its own External/spirv-headers submodule. With the optimiser off - which is
+# what keeps glslang from needing a second copy of SPIRV-Tools - nothing is
+# added, and its sources still include <spirv/unified1/spirv.hpp>.
+#
+# So the directory is attached here, once, to the two targets that need it.
+# This has to happen AFTER FetchContent_MakeAvailable(glslang), because before
+# then those targets do not exist and target_include_directories would fail.
+if(DEFINED SPIRV-Headers_SOURCE_DIR)
+    set(COPPER_SPIRV_HEADERS_INCLUDE "${SPIRV-Headers_SOURCE_DIR}/include")
+    foreach(dependent_target SPIRV-Tools SPIRV-Tools-static glslang SPIRV)
+        if(TARGET ${dependent_target})
+            target_include_directories(${dependent_target} PUBLIC "${COPPER_SPIRV_HEADERS_INCLUDE}")
+        endif()
+    endforeach()
+endif()
+
+FetchContent_Declare(shaderc
+    GIT_REPOSITORY https://github.com/google/shaderc.git
+    GIT_TAG ${SHADERC_PINNED_TAG} GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(shaderc)
 
 # Copper Oxide Renderer Library
 add_library(copper-oxide SHARED
@@ -166,8 +217,8 @@ target_link_libraries(copper-oxide
 # translator could only do a structural check and would have to say so.
 if(TARGET SPIRV-Tools)
     target_include_directories(copper-oxide PRIVATE
-        "${shaderc_SOURCE_DIR}/third_party/spirv-headers/include"
-        "${shaderc_SOURCE_DIR}/third_party/spirv-tools/include")
+        "${COPPER_SPIRV_HEADERS_INCLUDE}"
+        "${spirv_tools_SOURCE_DIR}/include")
     target_compile_definitions(copper-oxide PRIVATE COPPER_HAVE_SPIRV_TOOLS=1)
     target_link_libraries(copper-oxide PRIVATE SPIRV-Tools)
 else()

@@ -8,13 +8,24 @@ compatible with MIT; the attribution required by each is reproduced here.
 
 ## shaderc — Apache License 2.0
 
-Fetched at configure time from
-`https://github.com/google/shaderc/archive/refs/tags/v2024.4.tar.gz` and linked
-statically.
+Fetched at configure time from `https://github.com/google/shaderc` at tag
+`v2024.4` and linked statically.
 
 shaderc is Google's packaging of glslang, SPIRV-Tools and SPIRV-Headers behind a
-stable C API. It is the GLSL to SPIR-V compiler this project uses on the Vulkan
+stable API. It is the GLSL to SPIR-V compiler this project uses on the Vulkan
 backend.
+
+shaderc's own repository carries no `.gitmodules`; it expects its dependencies
+to be populated under `third_party/`. CMakeLists.txt therefore fetches all
+three itself, in dependency order, at exactly the revisions shaderc's `DEPS`
+file pins for `v2024.4` — so the set is the combination Khronos tests together
+rather than three independently chosen versions.
+
+| Project | Revision |
+|---|---|
+| [SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers) | `3f17b2af6784bfa2c5aa5dbb8e0e74a607dd8b3b` |
+| [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools) | `4d2f0b40bfe290dea6c6904dafdf7fd8328ba346` |
+| [glslang](https://github.com/KhronosGroup/glslang) | `a0995c49ebcaca2c6d3b03efbabf74f3843decdb` |
 
 shaderc incorporates material from the following works, each under its own
 licence as recorded in shaderc's `THIRD_PARTY_NOTICES`:
