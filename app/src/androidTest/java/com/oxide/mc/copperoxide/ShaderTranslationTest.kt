@@ -73,11 +73,16 @@ class ShaderTranslationTest {
         assertTrue("the shader did not compile: ${result.error}", result.succeeded)
         assertTrue("the result is not SPIR-V", result.looksLikeSpirv)
         assertTrue("a module this small is suspicious: ${result.spirv.size} words", result.spirv.size > 20)
-        // Word 1 packs the SPIR-V version in the high 16 bits. Vulkan 1.0
-        // semantics means SPIR-V 1.0 to 1.3; anything above that needs a
-        // capability Copper Oxide does not require a device to have.
-        val version = result.spirv[1] ushr 16
-        assertTrue("unexpected SPIR-V version $version", version in 1..3)
+        // Word 1 encodes the version as major in bits 23:16 and minor in bits
+        // 15:8. Vulkan 1.0 consumes SPIR-V up to 1.0 - Vulkan 1.1 is what raises
+        // the ceiling to 1.3 - and the renderer pins the Vulkan ABI to 1.0
+        // because Android's libvulkan.so does not export 1.1+ entry points. A
+        // 1.3 module is a binary the validator rejects outright, so this is
+        // asserted exactly rather than as a range.
+        val major = (result.spirv[1] ushr 16) and 0xff
+        val minor = (result.spirv[1] ushr 8) and 0xff
+        assertEquals("unexpected SPIR-V version $major.$minor", 1, major)
+        assertEquals("unexpected SPIR-V version $major.$minor", 0, minor)
         assertTrue("spirv-val did not run or did not pass: ${result.error}", result.validated)
     }
 

@@ -60,7 +60,25 @@ constexpr uint32_t kSpirvMagic = 0x07230203u;
 // cannot assume 1.1 even though create_instance asks for it. Raising this is a
 // one-line change once the renderer reports the device's real apiVersion.
 constexpr uint32_t kTargetEnvVersion = shaderc_env_version_vulkan_1_0;
-constexpr shaderc_spirv_version kTargetSpirv = shaderc_spirv_version_1_3;
+
+// SPIR-V 1.0, NOT 1.3.
+//
+// The two are not independent: Vulkan 1.0 consumes SPIR-V up to 1.0, and Vulkan
+// 1.1 is what raises the ceiling to 1.3. Emitting a 1.3 module under Vulkan 1.0
+// semantics produces a binary that the validator itself rejects:
+//
+//   Invalid SPIR-V binary version 1.3 for target environment SPIR-V 1.0
+//   (under Vulkan 1.0 semantics).
+//
+// Copper Oxide has to run on a Vulkan 1.0 device - the renderer pins the Vulkan
+// ABI to 1.0 because Android's libvulkan.so does not export 1.1+ entry points -
+// so 1.0 is the only correct target. Nothing this renderer needs requires 1.3:
+// std140 blocks, separate shader objects and combined image samplers are all
+// core in SPIR-V 1.0.
+//
+// Raising this means raising the device's apiVersion first, not just this
+// constant.
+constexpr shaderc_spirv_version kTargetSpirv = shaderc_spirv_version_1_0;
 
 shaderc_shader_kind to_shaderc_kind(ShaderStage stage) {
     switch (stage) {
@@ -437,7 +455,7 @@ public:
             LOGE("shaderc failed to initialise; the Vulkan backend cannot accept GLSL");
             return;
         }
-        LOGI("shaderc %s ready (Vulkan 1.0 semantics, SPIR-V 1.3)", COPPER_SHADERC_TAG);
+        LOGI("shaderc %s ready (Vulkan 1.0 semantics, SPIR-V 1.0)", COPPER_SHADERC_TAG);
     }
 
     std::string toolchainId() const override {
@@ -447,7 +465,7 @@ public:
         // invalidates every artifact the previous compiler produced.
         std::string id = "shaderc-";
         id += COPPER_SHADERC_TAG;
-        id += "-vk1.0-spv1.3";
+        id += "-vk1.0-spv1.0";
 #ifdef COPPER_HAVE_SPIRV_TOOLS
         id += "+spirv-tools";
 #else
@@ -638,12 +656,16 @@ public:
         result.success = ok;
         result.validated = true;
         if (!ok) {
-            // Word 1 of a SPIR-V module packs the version in its high 16 bits.
-            const uint32_t spirv_version = spirv[1] >> 16;
+            // Word 1 encodes the version as major in bits 23:16 and minor in
+            // bits 15:8 - 1.3 is 0x00010300 - so both halves have to be read out
+            // of the word directly. Taking the high half first and then splitting
+            // that printed nonsense like "SPIR-V 0.1".
+            const uint32_t major = (spirv[1] >> 16) & 0xffu;
+            const uint32_t minor = (spirv[1] >> 8) & 0xffu;
             std::string detail = !first_error.empty() ? first_error : first_message;
             result.error = "spirv-val rejected this " + std::to_string(spirv.size()) +
-                           "-word module (SPIR-V " + std::to_string((spirv_version >> 8) & 0xff) +
-                           "." + std::to_string(spirv_version & 0xff) + ") against Vulkan 1.0" +
+                           "-word module (SPIR-V " + std::to_string(major) + "." +
+                           std::to_string(minor) + ") against Vulkan 1.0" +
                            (detail.empty() ? std::string()
                                             : ": " + detail);
         }

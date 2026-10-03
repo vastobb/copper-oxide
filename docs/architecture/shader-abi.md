@@ -37,12 +37,26 @@ Consequences worth stating plainly:
 | Property | Vulkan | OpenGL ES |
 |---|---|---|
 | `#version` | `#version 450` (also 460, 330, 140) | `#version 300 es` |
-| Target dialect | Vulkan 1.0 semantics, SPIR-V 1.3 | ES 3.0 semantics |
+| Target dialect | Vulkan 1.0 semantics, SPIR-V 1.0 | ES 3.0 semantics |
 | Descriptor bindings | auto-assigned if absent | not applicable |
 | Vertex attribute locations | **must be explicit** | may be implicit |
 
 `#version 450` is the baseline because that is what modern desktop GLSL is and
 what most shader packs are written against.
+
+The generated SPIR-V is **1.0**, and that is not a free choice. Vulkan 1.0
+consumes SPIR-V up to 1.0; Vulkan 1.1 is what raises the ceiling to 1.3. Copper
+Oxide pins the Vulkan ABI to 1.0 — Android's `libvulkan.so` does not export the
+1.1+ entry points — so a 1.3 module is a binary the validator rejects:
+
+```
+Invalid SPIR-V binary version 1.3 for target environment SPIR-V 1.0
+(under Vulkan 1.0 semantics).
+```
+
+Nothing this renderer needs needs 1.3: std140 blocks, separate shader objects and
+combined image samplers are all core in SPIR-V 1.0. Raising the target means
+raising the device's `apiVersion` first.
 
 Older versions are accepted by the compiler. They are not *tested*: `#version 120`
 era code uses `texture2D`, `gl_FragData` and `varying`, which need rewriting
