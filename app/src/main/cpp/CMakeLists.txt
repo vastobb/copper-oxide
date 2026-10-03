@@ -146,7 +146,15 @@ if(DEFINED SPIRV-Headers_SOURCE_DIR)
             if(aliased_target)
                 set(dependent_target ${aliased_target})
             endif()
-            target_include_directories(${dependent_target} PUBLIC "${COPPER_SPIRV_HEADERS_INCLUDE}")
+            # PRIVATE, not PUBLIC. FetchContent puts every source tree under
+            # <build>/_deps, so this path is inside the build directory, and
+            # CMake rejects a build-tree path in INTERFACE_INCLUDE_DIRECTORIES:
+            # such a target cannot be exported or installed. PRIVATE sets
+            # INCLUDE_DIRECTORIES instead, which is unconstrained, and that is
+            # all these targets need - they only use the headers to compile
+            # themselves. Consumers get the directory separately: shaderc is
+            # given it by its own CMake, and copper-oxide by the block below.
+            target_include_directories(${dependent_target} PRIVATE "${COPPER_SPIRV_HEADERS_INCLUDE}")
         endif()
     endforeach()
 endif()
