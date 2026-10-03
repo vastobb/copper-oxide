@@ -22,6 +22,8 @@
 // dependency on the platform log.
 #define LOG_TAG "CopperOxide-Base"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 
 namespace copper {
 
@@ -450,8 +452,17 @@ bool RendererBase::beginFrame() {
     return true;
 }
 
+// The frame counter is the only thing a caller can observe about the frame
+// lifecycle, so a mismatch between it and the callbacks the caller receives is
+// otherwise invisible. These two lines are what make that mismatch diagnosable
+// from a device log instead of requiring a debugger.
+#define COPPER_FRAME_TRACE 1
+
 void RendererBase::endFrame() {
     if (!pImpl->frameActive) {
+#ifdef COPPER_FRAME_TRACE
+        LOGW("endFrame() ignored: no frame is active");
+#endif
         return;
     }
 
@@ -472,6 +483,10 @@ void RendererBase::endFrame() {
     if (pImpl->profiler) {
         pImpl->profiler->endFrame(pImpl->frameNumber, frameTimeMs, frameTimeMs, 0.0, pImpl->drawCalls);
     }
+#ifdef COPPER_FRAME_TRACE
+    LOGI("frame %llu complete in %.3f ms, %u draw calls", (unsigned long long)pImpl->frameNumber,
+         frameTimeMs, pImpl->drawCalls);
+#endif
 }
 
 void RendererBase::present() {
