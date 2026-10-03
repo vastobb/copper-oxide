@@ -426,7 +426,7 @@ public:
                 source, to_shaderc_kind(request.stage), file_name.c_str(),
                 request.entry_point.empty() ? "main" : request.entry_point.c_str(), options);
 
-            if (compiled.GetCompilationStatus() != shaderc_compilation_success) {
+            if (compiled.GetCompilationStatus() != shaderc_compilation_status_success) {
                 diagnostics = compiled.GetErrorMessage();
                 if (diagnostics.empty()) {
                     diagnostics = "the compiler rejected the shader without saying why";
@@ -494,13 +494,22 @@ public:
         }
 
 #ifdef COPPER_HAVE_SPIRV_TOOLS
+        // This SPIRV-Tools revision exposes Validate(binary, size) with no
+        // message out-parameter - that overload arrived later - so a rejection
+        // cannot be quoted verbatim. The module is still refused, and the
+        // diagnostic says enough to act on: how many words were rejected and
+        // which SPIR-V version they claimed.
         spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_0);
-        std::string message;
-        const bool ok = tools.Validate(spirv.data(), spirv.size(), &message);
+        const bool ok = tools.Validate(spirv.data(), spirv.size());
         result.success = ok;
         result.validated = true;
         if (!ok) {
-            result.error = message.empty() ? "spirv-val rejected the module" : message;
+            const uint32_t spirv_version = spirv[1] & 0x00ffffffu;
+            result.error = "spirv-val rejected a " + std::to_string(spirv.size()) +
+                           "-word module claiming SPIR-V " + std::to_string(spirv_version >> 16) +
+                           "." + std::to_string(spirv_version >> 8) + "." +
+                           std::to_string(spirv_version & 0xffu) +
+                           " against Vulkan 1.0";
         }
         return result;
 #else
@@ -517,7 +526,11 @@ public:
 private:
     // Guards compiler_: shaderc does not document its compiler as reentrant,
     // and a compile can be reached from any thread that owns a renderer.
-    std::mutex mutex_;
+    //
+    // mutable because available() is const and still has to read compiler_
+    // under the lock; std::lock_guard binds a non-const reference, so a
+    // non-mutable member would not compile there.
+    mutable std::mutex mutex_;
     std::unique_ptr<shaderc::Compiler> compiler_;
 };
 
