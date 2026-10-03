@@ -27,6 +27,15 @@ namespace copper {
 
 static std::mutex g_renderer_mutex;
 static std::unique_ptr<RendererBase> g_renderer;
+// Which CopperOxideRenderer instance owns g_renderer.
+//
+// There is one process-global renderer slot, but there can be more than one
+// CopperOxideRenderer object in a process - the activity and an instrumentation
+// test both create one. Without ownership, the second initialize() replaced the
+// first instance's renderer and the first instance's shutdown() destroyed it out
+// from under its own running render loop, which is how frame statistics came
+// back as all zeroes while the native side was visibly rendering.
+static uint64_t g_renderer_owner = 0;
 static JavaVM* g_jvm = nullptr;
 
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
@@ -36,8 +45,15 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
 }
 
 extern "C" JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
-    std::lock_guard<std::mutex> lock(g_renderer_mutex);
-    g_renderer.reset();
+    std::unique_ptr<RendererBase> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_renderer_mutex);
+        renderer = std::move(g_renderer);
+        g_renderer_owner = 0;
+    }
+    if (renderer) {
+        renderer->shutdown();
+    }
     g_jvm = nullptr;
     LOGI("JNI_OnUnload");
 }
@@ -60,10 +76,23 @@ RendererBase* getRenderer() {
     return g_renderer.get();
 }
 
-void setRenderer(std::unique_ptr<RendererBase> renderer) {
-    std::lock_guard<std::mutex> lock(g_renderer_mutex);
-    g_renderer = std::move(renderer);
+void setRenderer(std::unique_ptr<RendererBase> renderer, uint64_t owner) {
+    std::unique_ptr<RendererBase> displaced;
+    {
+        std::lock_guard<std::mutex> lock(g_renderer_mutex);
+        // Replacing the slot must not leak or leave a previous owner's renderer
+        // alive with nothing pointing at it, so the old one is taken out here
+        // and shut down outside the lock.
+        displaced = std::move(g_renderer);
+        g_renderer = std::move(renderer);
+        g_renderer_owner = owner;
+    }
+    if (displaced) {
+        LOGE("a renderer was already installed; shutting the previous one down");
+        displaced->shutdown();
+    }
 }
+
 
 namespace {
 
@@ -127,9 +156,11 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeInitialize(
     jboolean lowLatencyMode,
     jboolean batterySaverMode,
     jboolean thermalThrottlingAware,
-    jfloat thermalThrottleThreshold
+    jfloat thermalThrottleThreshold,
+    jlong owner
 ) {
-    LOGI("nativeInitialize: backend=%d", preferredBackend);
+    LOGI("nativeInitialize: backend=%d owner=%lld", preferredBackend,
+         static_cast<long long>(owner));
 
     RendererConfig config;
     config.preferredBackend = static_cast<RendererBackend>(preferredBackend);
@@ -203,27 +234,34 @@ Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeInitialize(
         }
     }
 
-    setRenderer(std::move(renderer));
+    setRenderer(std::move(renderer), static_cast<uint64_t>(owner));
     LOGI("Renderer initialized successfully");
     return JNI_TRUE;
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_oxide_mc_copperoxide_renderer_CopperOxideRenderer_nativeShutdown(
-    JNIEnv* env, jobject thiz
+    JNIEnv* env, jobject thiz, jlong owner
 ) {
-    LOGI("nativeShutdown");
-    // Take the renderer out of the global slot first so no other thread can
-    // pick it up mid-teardown, then shut it down properly. Dropping the
-    // unique_ptr without calling shutdown() destroys the C++ object while its
-    // device, swapchain and EGL context are still live, which leaks all of them
-    // and leaves the render thread's context current to a destroyed surface.
+    LOGI("nativeShutdown: owner=%lld", static_cast<long long>(owner));
     std::unique_ptr<RendererBase> renderer;
     {
         std::lock_guard<std::mutex> lock(g_renderer_mutex);
+        // Only the instance that installed the renderer may tear it down.
+        // Another CopperOxideRenderer in the same process - the activity, or an
+        // instrumentation test - owns it now, and destroying it here would pull
+        // the device and the surface out from under that owner's render thread.
+        if (g_renderer_owner != static_cast<uint64_t>(owner)) {
+            LOGW("nativeShutdown from owner %lld, but owner %llu holds the renderer; ignoring",
+                 static_cast<long long>(owner), static_cast<unsigned long long>(g_renderer_owner));
+            return;
+        }
         renderer = std::move(g_renderer);
+        g_renderer_owner = 0;
     }
     if (renderer) {
+        // Dropping the unique_ptr without calling shutdown() would destroy the
+        // C++ object while its device, swapchain and EGL context are still live.
         renderer->shutdown();
     }
 }

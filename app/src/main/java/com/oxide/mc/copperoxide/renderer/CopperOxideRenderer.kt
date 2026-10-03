@@ -13,6 +13,7 @@ import androidx.lifecycle.OnLifecycleEvent
 import android.os.Handler
 import android.os.Looper
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
@@ -34,6 +35,16 @@ open class CopperOxideRenderer(
         // request. A frame in flight at up to 5s frame timeout can exceed this,
         // which is why shutdown logs rather than blocking indefinitely.
         private const val RENDER_THREAD_JOIN_TIMEOUT_MS = 6_000L
+
+        /**
+         * Distinguishes renderer instances within one process.
+         *
+         * Native code keeps a single process-global renderer slot, so without a
+         * tag a second CopperOxideRenderer - the activity, or an instrumentation
+         * test running alongside it - silently takes over the slot and the first
+         * instance's shutdown() then destroys a renderer it no longer owns.
+         */
+        private val nextOwnerTag = AtomicLong(1)
         private var sNativeLoaded = false
 
         @JvmStatic
@@ -48,6 +59,9 @@ open class CopperOxideRenderer(
         @JvmStatic
         fun isNativeLoaded(): Boolean = sNativeLoaded
     }
+
+    // Identifies this instance to the native side. Zero means never initialized.
+    private val ownerTag: Long = nextOwnerTag.getAndIncrement()
 
     // Native renderer state
     private var nativeHandle: Long = 0
@@ -150,7 +164,8 @@ open class CopperOxideRenderer(
             config.lowLatencyMode,
             config.batterySaverMode,
             config.thermalThrottlingAware,
-            config.thermalThrottleThreshold
+            config.thermalThrottleThreshold,
+            ownerTag
         )
 
         if (result) {
@@ -447,7 +462,7 @@ open class CopperOxideRenderer(
             }
         }
         if (initialized) {
-            nativeShutdown()
+            nativeShutdown(ownerTag)
             initialized = false
             Log.i(TAG, "Renderer shutdown")
         }
@@ -490,10 +505,11 @@ open class CopperOxideRenderer(
         lowLatencyMode: Boolean,
         batterySaverMode: Boolean,
         thermalThrottlingAware: Boolean,
-        thermalThrottleThreshold: Float
+        thermalThrottleThreshold: Float,
+        ownerTag: Long
     ): Boolean
 
-    external private fun nativeShutdown()
+    external private fun nativeShutdown(ownerTag: Long)
     external private fun nativeBeginFrame(): Boolean
     external private fun nativeEndFrame()
     external private fun nativePresent()
